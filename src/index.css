@@ -561,6 +561,27 @@
   }
 }
 
+/* Testimonials marquee (components/tutorial/Testimonials). The track holds the
+   cards twice, so moving it by -50% loops seamlessly. Hover pauses it. */
+.marquee-track {
+  animation: marquee 48s linear infinite;
+}
+.marquee-track.marquee-reverse {
+  animation-direction: reverse;
+  animation-duration: 56s;
+}
+.marquee:hover .marquee-track {
+  animation-play-state: paused;
+}
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
 /* Respect the OS "reduce motion" setting: keep the story, drop the motion. */
 @media (prefers-reduced-motion: reduce) {
   .hs-camera,
@@ -588,7 +609,8 @@
   .demo-caption,
   .mini-select-box,
   .mini-select-pointer,
-  .mini-drop-card {
+  .mini-drop-card,
+  .marquee-track {
     animation: none !important;
   }
 }

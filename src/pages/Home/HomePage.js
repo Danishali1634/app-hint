@@ -7,7 +7,8 @@
  *   2. Find a course   — search (results appear only while typing) · View all
  *   3. See it in action— looping animated demo (components/tutorial/HowItWorksDemo)
  *   4. How it works    — the 3 steps to make a walkthrough
- *   5. What we stand for
+ *   5. What teams say (testimonials marquee — SAMPLE quotes, replace before launch)
+ *   6. What we stand for
  *
  * Search matches title and page name; with no match it shows "No results
  * found" + "Did you mean" suggestions (utils/search.js via CourseResults).
@@ -35,6 +36,7 @@ import { SearchInput } from '@/components/ui/SearchInput';
 import { CourseResults } from '@/components/course/CourseResults';
 import { Spinner } from '@/components/ui/Spinner';
 import { HowItWorksDemo } from '@/components/tutorial/HowItWorksDemo';
+import { Testimonials } from '@/components/tutorial/Testimonials';
 
 const HOW_IT_WORKS = [
   {
@@ -231,7 +233,21 @@ export function HomePage() {
         </div>
       </section>
 
-      {/* ── 5. What we stand for ── */}
+      {/* ── 5. What teams say ── */}
+      <section className="mt-24">
+        <div className="text-center mb-10">
+          <p className={SECTION_EYEBROW}>What teams say</p>
+          <h2 className="text-2xl sm:text-3xl font-bold text-ink dark:text-white">
+            Built for people who explain software
+          </h2>
+        </div>
+        {/* Full-bleed within the page column so the marquee has room to move */}
+        <div className="-mx-4 sm:-mx-6">
+          <Testimonials />
+        </div>
+      </section>
+
+      {/* ── 6. What we stand for ── */}
       <section className="mt-24">
         <div className="relative overflow-hidden rounded-[2rem] border border-line dark:border-line-dark bg-gradient-to-br from-accent/10 via-panel to-violet/10 dark:from-accent/15 dark:via-panel-dark dark:to-violet/15 p-8 sm:p-12">
           <div className="max-w-2xl">

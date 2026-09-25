@@ -401,7 +401,7 @@ export function WalkthroughPlayer({
     return (
       <div
         ref={rootRef}
-        className={`${isInline ? 'relative w-full h-full rounded-3xl' : 'fixed inset-0'} overflow-hidden bg-[#050507] text-white select-none`}
+        className={`group/player ${isInline ? 'relative w-full h-full rounded-3xl' : 'fixed inset-0'} overflow-hidden bg-[#050507] text-white select-none`}
       >
         {/* Blurred copy of the screenshot fills the letterbox space */}
         {step.imageData && (
@@ -417,7 +417,8 @@ export function WalkthroughPlayer({
         {/* Stage (above the control bar) */}
         <div
           ref={stageAreaRef}
-          className="absolute inset-x-0 top-0 bottom-10 flex items-center justify-center px-2 pt-2 pb-1"
+          // Uses the full frame; the control bar floats over the picture.
+          className="absolute inset-0 flex items-center justify-center p-1.5"
         >
           {!ready || stageArea.width === 0 ? (
             <Spinner />
@@ -442,7 +443,8 @@ export function WalkthroughPlayer({
             />
           )}
           {showCompactCaption && (
-            <div className="hs-caption-in absolute left-2 right-2 bottom-2 z-20 flex justify-center pointer-events-none">
+            // Top of the frame, so it never collides with the control bar.
+            <div className="hs-caption-in absolute left-2 right-2 top-2 z-20 flex justify-center pointer-events-none">
               <div className="w-[min(460px,100%)]">
                 <CaptionContent
                   step={step}
@@ -489,8 +491,15 @@ export function WalkthroughPlayer({
           </div>
         )}
 
-        {/* Control bar over the picture */}
-        <div className="absolute inset-x-0 bottom-0 z-40 h-10 flex items-center gap-1 px-1.5 bg-gradient-to-t from-black/90 to-black/50 backdrop-blur-sm">
+        {/* Control bar over the picture. While playing it fades out and comes
+            back on hover/focus (like YouTube); when paused it always shows. */}
+        <div
+          className={`absolute inset-x-0 bottom-0 z-40 h-12 pt-2 flex items-center gap-1 px-1.5 bg-gradient-to-t from-black/85 via-black/55 to-transparent transition-opacity duration-300 ${
+            playing && hasStarted && phase !== 'done'
+              ? 'opacity-0 group-hover/player:opacity-100 focus-within:opacity-100'
+              : 'opacity-100'
+          }`}
+        >
           <button
             onClick={togglePlay}
             className={COMPACT_ICON_BUTTON_CLASS_DARK}

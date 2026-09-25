@@ -19,6 +19,8 @@
  *   #/preview/:courseId    CoursePreviewPage   summary + full walkthrough playback
  *   #/s/:slug/:encoded     SharedCoursePage    play a course embedded in the URL
  *   #/embed/:slug/:encoded EmbedPage           player only, for <iframe> embeds
+ *                                              (WATCH-ONLY: inside an iframe no other
+ *                                              page is shown — see EmbedOnlyNotice)
  *   anything else          → redirect to #/
  *
  * WHY HashRouter (not BrowserRouter)
@@ -102,22 +104,39 @@ function Layout({ children }) {
   );
 }
 
+/** Shown instead of the app when it is framed without a valid embed URL. */
+function EmbedOnlyNotice() {
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-6 text-center bg-paper dark:bg-paper-dark">
+      <p className="text-sm text-ink-soft dark:text-ink-faint-dark">
+        This content can only be watched here. Ask the author for a new embed code.
+      </p>
+    </div>
+  );
+}
+
 function AppRoutes() {
   const location = useLocation();
   const isSharedLink = location.pathname.startsWith('/s/');
   const isEmbed = location.pathname.startsWith('/embed/');
+  // Inside someone else's page (an <iframe>)?
+  const inIframe = window.self !== window.top;
 
-  // Embeds (inside someone else's page): the player only.
+  // Embeds are WATCH-ONLY: the player and nothing else.
   if (isEmbed) {
     return (
       <Suspense fallback={<PageSpinner />}>
         <Routes>
           <Route path="/embed/:slug/:encoded" element={<EmbedPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<EmbedOnlyNotice />} />
         </Routes>
       </Suspense>
     );
   }
+
+  // Any other page loaded inside an iframe would expose creating/editing
+  // courses to the host site's visitors — show a notice instead.
+  if (inIframe && !isSharedLink) return <EmbedOnlyNotice />;
 
   // Shared links get a bare layout (no header / authoring buttons).
   if (isSharedLink) {
