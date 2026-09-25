@@ -11,7 +11,8 @@
  *
  * Each row shows a small content summary so authors can see at a glance what a
  * step is missing: No screenshot (warning) / Click or Look (the region's
- * action) / Voice / AI (text will be read by TTS).
+ * action), plus a pill for what is SAID: "Your voice" (recording, plays
+ * first) / "Text · AI voice" (read by TTS) / "Nothing to say yet".
  */
 
 import { Fragment } from 'react';
@@ -126,15 +127,20 @@ export function StepRail({
                     </span>
                   )}
                   {hasImage && !hasRegion && <span>No area yet</span>}
-                  {hasAudio && (
-                    <span className="flex items-center gap-0.5 text-teal dark:text-teal-dark">
-                      <Mic className="w-3 h-3" /> Voice
+                </div>
+                {/* What is said at this step — always shown, so it's obvious */}
+                <div className="mt-1">
+                  {hasAudio ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-teal/15 text-teal dark:text-teal-dark">
+                      <Mic className="w-3 h-3" /> Your voice
                     </span>
-                  )}
-                  {/* Text without a recording → the player will use TTS */}
-                  {hasText && !hasAudio && (
-                    <span className="flex items-center gap-0.5 text-violet dark:text-violet-dark">
-                      <Type className="w-3 h-3" /> AI
+                  ) : hasText ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-violet/15 text-violet dark:text-violet-dark">
+                      <Type className="w-3 h-3" /> Text · AI voice
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                      Nothing to say yet
                     </span>
                   )}
                 </div>

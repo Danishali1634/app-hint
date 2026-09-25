@@ -21,9 +21,22 @@
  */
 
 import { useRef, useEffect, useState } from 'react';
-import { Mic, Play, Pause, Trash2, Loader2, AlertCircle, Type, RotateCcw } from 'lucide-react';
+import {
+  Mic,
+  Play,
+  Pause,
+  Trash2,
+  Loader2,
+  AlertCircle,
+  Type,
+  RotateCcw,
+  FileText,
+  Upload,
+} from 'lucide-react';
 import { useAudioRecorder, formatDuration } from '@/hooks/useAudioRecorder';
-import { putMedia, deleteMedia, getMediaAsDataUrl } from '@/services/storage/db';
+import { putMedia, deleteMedia, getMedia, getMediaAsDataUrl } from '@/services/storage/db';
+import { transcribeRecording } from '@/services/audio/transcribe';
+import { compressVoiceFile } from '@/services/audio/recorder';
 import { nextId } from '@/utils';
 import { useToast } from '@/hooks/useToast';
 
@@ -37,9 +50,19 @@ const RECORD_BUTTON_CLASS =
  *   step: Step,
  *   onSave: (audioId: string) => void,
  *   onDelete: () => void,
+ *   manageMedia?: boolean,  // false = never delete Blobs; the parent decides on Save/Cancel
+ *   compact?: boolean,      // hide the status badges (the preview studio's edit panel)
+ *   onTranscribed?: (text: string) => void,  // "Convert to text": parent sets text + removes audio
  * }} props
  */
-export function AudioRecorderPanel({ step, onSave, onDelete }) {
+export function AudioRecorderPanel({
+  step,
+  onSave,
+  onDelete,
+  manageMedia = true,
+  compact = false,
+  onTranscribed,
+}) {
   const { supported, state, duration, error, start, stop, cancel, reset } = useAudioRecorder();
   const { notify } = useToast();
 
@@ -89,13 +112,69 @@ export function AudioRecorderPanel({ step, onSave, onDelete }) {
     }
     const mediaId = nextId('media');
     await putMedia(mediaId, blob);
-    if (step.audioId) await deleteMedia(step.audioId); // replace old take
+    if (manageMedia && step.audioId) await deleteMedia(step.audioId); // replace old take
     onSave(mediaId);
     notify('Recording saved', 'success');
   };
 
+  // "Convert to text": the recording becomes the description, the AI voice reads it.
+  const [converting, setConverting] = useState(null); // null | { download: number }
+  const handleConvert = async () => {
+    if (!step.audioId) return;
+    setConverting({ download: 0 });
+    try {
+      const blob = await getMedia(step.audioId);
+      if (!blob) throw new Error('missing');
+      const text = await transcribeRecording(blob, (download) =>
+        setConverting((c) => (c ? { download } : c)),
+      );
+      if (!text) {
+        notify('No speech found in this recording', 'error');
+        return;
+      }
+      if (manageMedia) await deleteMedia(step.audioId);
+      audioRef.current?.pause();
+      onTranscribed(text);
+      notify('Converted to text — the AI voice will read it now', 'success');
+    } catch {
+      notify('Could not convert this recording. Check your internet and try again.', 'error');
+    } finally {
+      setConverting(null);
+    }
+  };
+
+  // "Upload audio": an existing voice file, shrunk to the app's voice format.
+  const [uploading, setUploading] = useState(null); // null | progress 0–1
+  const handleUpload = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'audio/*';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      if (!file.type.startsWith('audio/') && !/\.(mp3|m4a|wav|ogg|webm|aac)$/i.test(file.name)) {
+        notify('Please choose an audio file (MP3, M4A, WAV, …)', 'error');
+        return;
+      }
+      setUploading(0);
+      try {
+        const blob = await compressVoiceFile(file, (f) => setUploading(f));
+        const mediaId = nextId('media');
+        await putMedia(mediaId, blob);
+        if (manageMedia && step.audioId) await deleteMedia(step.audioId); // replace old take
+        onSave(mediaId);
+        notify('Voice added', 'success');
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Could not add this audio file', 'error');
+      } finally {
+        setUploading(null);
+      }
+    };
+    input.click();
+  };
+
   const handleDelete = async () => {
-    if (step.audioId) await deleteMedia(step.audioId);
+    if (manageMedia && step.audioId) await deleteMedia(step.audioId);
     onDelete();
     setHasAudio(false);
     setPreviewUrl(null);
@@ -114,7 +193,7 @@ export function AudioRecorderPanel({ step, onSave, onDelete }) {
   return (
     <div className="flex flex-col gap-3">
       {/* ── Status badges: what will play for this step ── */}
-      <div className="flex items-center gap-2 text-xs">
+      <div className={`flex items-center gap-2 text-xs ${compact ? 'hidden' : ''}`}>
         <div
           className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full font-medium ${
             hasAudio
@@ -182,11 +261,45 @@ export function AudioRecorderPanel({ step, onSave, onDelete }) {
         </div>
       )}
 
-      {/* ── Start recording ── */}
-      {showRecordButton && (
-        <button onClick={handleStart} className={RECORD_BUTTON_CLASS}>
-          <Mic className="w-4 h-4" /> Record voice
+      {/* ── Convert the recording to text ── */}
+      {onTranscribed && !loading && hasAudio && state !== 'recording' && (
+        <button
+          onClick={handleConvert}
+          disabled={!!converting}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg border border-line dark:border-line-dark text-sm font-medium text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark disabled:opacity-70 transition-colors w-fit"
+          title="Turns your recording into text; the AI voice then reads it instead of your recording"
+        >
+          {converting ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {converting.download > 0 && converting.download < 1
+                ? `Getting ready… ${Math.round(converting.download * 100)}%`
+                : 'Converting…'}
+            </>
+          ) : (
+            <>
+              <FileText className="w-4 h-4" /> Convert to text (use AI voice)
+            </>
+          )}
         </button>
+      )}
+
+      {/* ── Start recording ── */}
+      {showRecordButton && uploading == null && (
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={handleStart} className={RECORD_BUTTON_CLASS}>
+            <Mic className="w-4 h-4" /> Record voice
+          </button>
+          <button onClick={handleUpload} className={RECORD_BUTTON_CLASS}>
+            <Upload className="w-4 h-4" /> Upload audio
+          </button>
+        </div>
+      )}
+      {uploading != null && (
+        <div className="flex items-center gap-2 text-sm text-ink-soft dark:text-ink-soft-dark">
+          <Loader2 className="w-4 h-4 animate-spin" /> Making it small &amp; clear…{' '}
+          {Math.round(uploading * 100)}%
+        </div>
       )}
 
       {/* ── Recording in progress ── */}

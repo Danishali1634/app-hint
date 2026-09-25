@@ -3,8 +3,11 @@
  *
  * HOW IT WORKS (all in the browser, no server)
  *   1. Preload screenshots and decode recorded voices (AudioContext).
+ *      Steps with text but NO recording are spoken by an in-page neural voice
+ *      (services/audio/neuralVoice.js) — same priority as the player:
+ *      recorded voice first, then the text.
  *   2. buildTimeline(): lay every phase of every step on a timeline. Narration
- *      length = the recording's duration, or reading time for text.
+ *      length = the voice's duration (or reading time if no voice could be made).
  *   3. canvas.captureStream() gives a video track; the recordings are scheduled
  *      into a MediaStreamAudioDestinationNode at their narration start times.
  *   4. MediaRecorder records both tracks while renderFrame() draws each frame.
@@ -13,24 +16,34 @@
  * FORMAT: MP4 (H.264/AAC) when the browser can record it (recent Chrome, Safari),
  * otherwise WebM. The file extension follows the actual format.
  *
+ * VOICE CLARITY: every voice goes through a gentle compressor + make-up gain,
+ * so quiet and loud recordings end up equally clear. Audio is recorded at 96 kbps.
+ *
  * LIMITATIONS
- *   - Text-to-speech can't be captured (the browser speaks it outside the page),
- *     so TTS-only steps are silent in the video; their caption is shown instead.
+ *   - The video's AI voice is a neural English voice (the live player uses the
+ *     browser's own voices, which can't be recorded). First use downloads it once.
+ *     If it can't be loaded (offline), text steps are silent with their caption.
  *   - Browsers throttle hidden tabs; the tab must stay visible while recording.
  */
 
 import { WALKTHROUGH_TIMING } from '@/constants';
 import { buildTimeline, segmentAt } from './timeline';
 import { renderFrame } from './renderFrame';
+import { synthesizeSpeech } from '@/services/audio/neuralVoice';
 
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
 
 const VIDEO_WIDTH = 1280;
 const VIDEO_HEIGHT = 720;
 const FPS = 30;
-const VIDEO_BITRATE = 6_000_000;
+/**
+ * 2 Mbps H.264 at 720p: screenshots stay sharp (the picture is mostly still),
+ * and a 6-step video is ~3 MB instead of ~9 MB.
+ */
+const VIDEO_BITRATE = 2_000_000;
 /** Silence after a recording before the walkthrough moves on (ms). */
 const AFTER_VOICE_PAUSE = 400;
+const AUDIO_BITRATE = 96_000;
 
 /** Preferred formats, best first. */
 const MIME_CANDIDATES = [
@@ -80,13 +93,15 @@ async function decodeAudio(audioCtx, dataUrl) {
  * @param {WalkthroughStep[]} steps
  * @param {{
  *   title: string,
- *   onProgress?: (fraction: number) => void,
+ *   onProgress?: (fraction: number) => void,           // recording progress 0–1
+ *   onStage?: (stage: 'voice' | 'record', fraction?: number) => void,
  *   signal?: AbortSignal,
  * }} options
- * @returns {Promise<{ blob: Blob, extension: 'mp4' | 'webm' }>}
+ * @returns {Promise<{ blob: Blob, extension: 'mp4' | 'webm', silentSteps: number }>}
+ *   silentSteps = text steps that got no voice (neural voice unavailable)
  * @throws {DOMException} name 'AbortError' when cancelled
  */
-export async function exportWalkthroughVideo(steps, { title, onProgress, signal }) {
+export async function exportWalkthroughVideo(steps, { title, onProgress, onStage, signal }) {
   if (!isVideoExportSupported()) {
     throw new Error('Video download is not supported in this browser.');
   }
@@ -107,6 +122,27 @@ export async function exportWalkthroughVideo(steps, { title, onProgress, signal 
     steps.map((step) => (step.audioData ? decodeAudio(audioCtx, step.audioData) : null)),
   );
   throwIfAborted();
+
+  // Text steps without a recording: speak the text with the neural voice.
+  const toSpeak = steps
+    .map((step, i) => (!voices[i] && step.text?.trim() ? i : -1))
+    .filter((i) => i >= 0);
+  let silentSteps = 0;
+  for (let n = 0; n < toSpeak.length; n++) {
+    const i = toSpeak[n];
+    onStage?.('voice', n / toSpeak.length);
+    try {
+      const wav = await synthesizeSpeech(steps[i].text.trim(), (download) =>
+        onStage?.('voice', (n + download * 0.9) / toSpeak.length),
+      );
+      voices[i] = await audioCtx.decodeAudioData(await wav.arrayBuffer());
+    } catch {
+      voices[i] = null;
+    }
+    if (!voices[i]) silentSteps++;
+    throwIfAborted();
+  }
+  onStage?.('record');
 
   // 2. Timeline
   const narrationMs = steps.map((step, i) =>
@@ -131,6 +167,7 @@ export async function exportWalkthroughVideo(steps, { title, onProgress, signal 
       progress,
       elapsed,
       time: t,
+      total,
     });
   };
   drawAt(0);
@@ -138,14 +175,26 @@ export async function exportWalkthroughVideo(steps, { title, onProgress, signal 
   const stream = canvas.captureStream(FPS);
   const hasVoice = voices.some(Boolean);
   const audioDestination = hasVoice ? audioCtx.createMediaStreamDestination() : null;
+  let voiceInput = null; // where voices are connected: compressor → make-up gain → destination
   if (audioDestination) {
     audioDestination.stream.getAudioTracks().forEach((track) => stream.addTrack(track));
+    const compressor = audioCtx.createDynamicsCompressor();
+    compressor.threshold.value = -20;
+    compressor.knee.value = 12;
+    compressor.ratio.value = 3.5;
+    compressor.attack.value = 0.004;
+    compressor.release.value = 0.25;
+    const makeUp = audioCtx.createGain();
+    makeUp.gain.value = 1.8;
+    compressor.connect(makeUp).connect(audioDestination);
+    voiceInput = compressor;
   }
 
   const mimeType = pickMimeType();
   const recorder = new MediaRecorder(stream, {
     ...(mimeType ? { mimeType } : {}),
     videoBitsPerSecond: VIDEO_BITRATE,
+    audioBitsPerSecond: AUDIO_BITRATE,
   });
   const chunks = [];
   recorder.ondataavailable = (e) => {
@@ -167,7 +216,7 @@ export async function exportWalkthroughVideo(steps, { title, onProgress, signal 
       if (!buffer) return;
       const source = audioCtx.createBufferSource();
       source.buffer = buffer;
-      source.connect(audioDestination);
+      source.connect(voiceInput);
       source.start(audioStart + narrateStart[i] / 1000);
     });
   }
@@ -199,5 +248,6 @@ export async function exportWalkthroughVideo(steps, { title, onProgress, signal 
   return {
     blob: new Blob(chunks, { type }),
     extension: type.startsWith('video/mp4') ? 'mp4' : 'webm',
+    silentSteps,
   };
 }

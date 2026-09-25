@@ -60,17 +60,33 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Upload, Eye, CheckCircle2, Pencil, Archive, Tag, Share2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  Upload,
+  Eye,
+  CheckCircle2,
+  Pencil,
+  Archive,
+  Tag,
+  Share2,
+  Link2,
+  Save,
+  Check,
+  Plus,
+  FileText,
+  Loader2,
+} from 'lucide-react';
 import {
   getCourse,
   saveCourse,
+  getMedia,
   getMediaAsDataUrl,
   putMedia,
   deleteMedia,
   findCourseByTitle,
   getCourseExpiry,
 } from '@/services/storage/db';
-import { buildWalkthroughSteps } from '@/services/sharing/share';
+import { transcribeRecording } from '@/services/audio/transcribe';
 import { exportCourseZip } from '@/services/export/zip';
 import { STATUS_LABELS, STATUS_COLORS, MAX_STEPS } from '@/constants';
 import { nextId } from '@/utils';
@@ -80,9 +96,10 @@ import { FeatureSelector } from '@/components/course/FeatureSelector';
 import { RegionActionBar } from '@/components/course/RegionActionBar';
 import { StepScreenshotUpload } from '@/components/course/StepScreenshotUpload';
 import { StepGuide } from '@/components/course/StepGuide';
+import { DescriptionField } from '@/components/course/DescriptionField';
+import { PreviewStudio } from '@/components/course/PreviewStudio';
 import { AudioRecorderPanel } from '@/components/course/AudioRecorderPanel';
 import { CourseDoneDialog } from '@/components/course/CourseDoneDialog';
-import { WalkthroughPlayer } from '@/components/walkthrough/WalkthroughPlayer';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { PageSpinner, Spinner } from '@/components/ui/Spinner';
 import { useToast } from '@/hooks/useToast';
@@ -127,6 +144,10 @@ export function CourseEditorPage() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [editingPageName, setEditingPageName] = useState(false);
   const [showDone, setShowDone] = useState(false); // "Mark done" dialog
+  // Everything autosaves; "Save changes" is the visible confirmation. Edits made
+  // after `confirmedAt` light the button up; pressing it saves and shows ✓.
+  const [confirmedAt, setConfirmedAt] = useState(0);
+  const [savedFlash, setSavedFlash] = useState(false);
   // Title before the current rename started — restored if the new one is taken.
   const titleBeforeEditRef = useRef('');
   const sharing = useCourseSharing();
@@ -146,6 +167,7 @@ export function CourseEditorPage() {
       return;
     }
     setCourse(loaded);
+    setConfirmedAt(loaded.updatedAt);
     if (loaded.steps.length > 0) setActiveStepId(loaded.steps[0].id);
     setLoading(false);
   }, [courseId, navigate, notify]);
@@ -229,6 +251,27 @@ export function CourseEditorPage() {
     [course, updateCourse],
   );
 
+  /**
+   * Several areas on ONE screenshot: each area is its own step (own number,
+   * description and voice) sharing the same screenshot. The player glides the
+   * camera from one area to the next without cutting, so they play as one scene.
+   */
+  const addAreaOnSameScreenshot = useCallback(
+    (afterIndex, imageId) => {
+      if (!course || course.steps.length >= MAX_STEPS) {
+        notify(`A course can have up to ${MAX_STEPS} steps`, 'error');
+        return;
+      }
+      const newStep = { ...createStep(afterIndex + 2), imageId };
+      const steps = [...course.steps];
+      steps.splice(afterIndex + 1, 0, newStep);
+      updateCourse({ steps: renumberDefaultLabels(steps) });
+      setActiveStepId(newStep.id);
+      setDrawMode(true); // straight into "drag a box"
+    },
+    [course, updateCourse, notify],
+  );
+
   const addStep = useCallback(() => {
     if (course) insertStep(course.steps.length);
   }, [course, insertStep]);
@@ -309,6 +352,25 @@ export function CourseEditorPage() {
   };
 
   // Nearest earlier step that has a screenshot → offered as "Use step N's screenshot".
+  // Steps in a row that use the active step's screenshot = its "areas".
+  const sameScreenSteps = [];
+  let sameScreenLastIndex = activeStepIndex;
+  if (course && activeStep) {
+    const imageId = getStepImageId(course, activeStep);
+    if (imageId) {
+      let start = activeStepIndex;
+      while (start > 0 && getStepImageId(course, course.steps[start - 1]) === imageId) start--;
+      let end = activeStepIndex;
+      while (
+        end < course.steps.length - 1 &&
+        getStepImageId(course, course.steps[end + 1]) === imageId
+      )
+        end++;
+      for (let i = start; i <= end; i++) sameScreenSteps.push({ step: course.steps[i], index: i });
+      sameScreenLastIndex = end;
+    }
+  }
+
   let reuseSourceIndex = -1;
   if (course && activeStepIndex > 0) {
     for (let i = activeStepIndex - 1; i >= 0; i--) {
@@ -385,6 +447,42 @@ export function CourseEditorPage() {
     if (next !== course.title) updateCourse({ title: next });
   };
 
+  // "Convert all voices to text": every recording becomes its step's text,
+  // then the AI voice reads it (for people who talk instead of typing).
+  const [convertingAll, setConvertingAll] = useState(null); // null | { done, total }
+  const convertAllVoices = async () => {
+    const withVoice = course.steps.filter((st) => st.audioId);
+    if (withVoice.length === 0) return;
+    setConvertingAll({ done: 0, total: withVoice.length });
+    let failed = 0;
+    for (let n = 0; n < withVoice.length; n++) {
+      const st = withVoice[n];
+      try {
+        const blob = await getMedia(st.audioId);
+        const text = blob ? await transcribeRecording(blob) : '';
+        if (text) {
+          updateStep(st.id, { text, audioId: null });
+          await deleteMedia(st.audioId);
+        } else failed++;
+      } catch {
+        failed++;
+      }
+      setConvertingAll({ done: n + 1, total: withVoice.length });
+    }
+    setConvertingAll(null);
+    if (failed)
+      notify(`${failed} recording${failed > 1 ? 's' : ''} could not be converted`, 'error');
+    else notify('All voices converted to text — the AI voice reads them now', 'success');
+  };
+
+  const saveNow = async () => {
+    await saveCourse(course);
+    setConfirmedAt(course.updatedAt);
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 1800);
+    notify('All changes saved', 'success');
+  };
+
   const handleExport = async () => {
     if (!course) return;
     try {
@@ -405,6 +503,7 @@ export function CourseEditorPage() {
   const isDone = course.status === 'published';
   // Edited after the last Mark done? (small tolerance: Mark done itself bumps updatedAt)
   const changedSinceDone = isDone && course.updatedAt - (course.publishedAt ?? 0) > 1500;
+  const hasNewEdits = course.updatedAt > confirmedAt;
   const deletesOn = new Date(getCourseExpiry(course)).toLocaleDateString(undefined, {
     day: 'numeric',
     month: 'short',
@@ -477,14 +576,39 @@ export function CourseEditorPage() {
           </span>
         </div>
 
-        <button
-          onClick={handleExport}
-          className={OUTLINE_BUTTON_CLASS}
-          title="Download a ZIP backup"
-        >
-          <Archive className="w-4 h-4" />
-          <span className="hidden sm:inline">Export ZIP</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {(convertingAll || course.steps.some((st) => st.audioId)) && (
+            <button
+              onClick={convertAllVoices}
+              disabled={!!convertingAll}
+              className={OUTLINE_BUTTON_CLASS}
+              title="Turn every recorded voice into text; the AI voice then reads it"
+            >
+              {convertingAll ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" /> Converting{' '}
+                  {convertingAll.done + 1 > convertingAll.total
+                    ? convertingAll.total
+                    : convertingAll.done + 1}{' '}
+                  of {convertingAll.total}…
+                </>
+              ) : (
+                <>
+                  <FileText className="w-4 h-4" />
+                  <span className="hidden sm:inline">Convert all voices to text</span>
+                </>
+              )}
+            </button>
+          )}
+          <button
+            onClick={handleExport}
+            className={OUTLINE_BUTTON_CLASS}
+            title="Download a ZIP backup"
+          >
+            <Archive className="w-4 h-4" />
+            <span className="hidden sm:inline">Export ZIP</span>
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
@@ -554,6 +678,11 @@ export function CourseEditorPage() {
                     region={activeStep.region}
                     onRegionChange={handleRegionChange}
                     drawMode={drawMode}
+                    number={sameScreenSteps.length > 1 ? activeStepIndex + 1 : undefined}
+                    otherAreas={sameScreenSteps
+                      .filter((a) => a.step.id !== activeStep.id && a.step.region)
+                      .map((a) => ({ id: a.step.id, number: a.index + 1, region: a.step.region }))}
+                    onSelectArea={selectStep}
                   />
                   <RegionActionBar
                     hasRegion={!!activeStep.region}
@@ -563,23 +692,49 @@ export function CourseEditorPage() {
                     onCancelSelect={() => setDrawMode(false)}
                     onActionChange={(action) => updateStep(activeStep.id, { action })}
                   />
+                  {activeStep.region && !drawMode && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-ink-faint dark:text-ink-faint-dark mr-1">
+                        Areas on this screenshot
+                      </span>
+                      {sameScreenSteps.map((a) => (
+                        <button
+                          key={a.step.id}
+                          onClick={() => selectStep(a.step.id)}
+                          className={`w-8 h-8 rounded-full text-xs font-bold transition-colors ${
+                            a.step.id === activeStep.id
+                              ? 'bg-accent text-white shadow-glow'
+                              : 'border border-line dark:border-line-dark text-ink-soft dark:text-ink-soft-dark hover:border-accent'
+                          }`}
+                          aria-label={`Step ${a.index + 1}`}
+                        >
+                          {a.index + 1}
+                        </button>
+                      ))}
+                      <button
+                        onClick={() => addAreaOnSameScreenshot(sameScreenLastIndex, activeImageId)}
+                        className="flex items-center gap-1.5 px-3 h-8 rounded-full bg-accent/10 text-accent text-sm font-semibold hover:bg-accent/15"
+                      >
+                        <Plus className="w-4 h-4" /> Add another area
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                 <div>
                   <label className={SECTION_LABEL_CLASS}>Step Description</label>
-                  <textarea
+                  <DescriptionField
                     id="step-description"
                     value={activeStep.text}
-                    onChange={(e) => updateStep(activeStep.id, { text: e.target.value })}
-                    placeholder="Describe what to do here... (e.g. 'Yahan click karke aap graph data dekh sakte hain.')"
-                    rows={4}
-                    className="w-full px-3 py-2.5 rounded-lg bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent transition-colors resize-none"
+                    onChange={(text) => updateStep(activeStep.id, { text })}
+                    label={activeStep.label}
+                    pageName={course.pageName}
+                    action={getStepAction(activeStep)}
                   />
                   <p className="text-xs text-ink-faint dark:text-ink-faint-dark mt-1.5">
-                    Shown next to the highlighted area. If no voice is recorded, it is spoken in an
-                    Indian Hinglish AI voice.
+                    No voice recorded? The AI voice reads this.
                   </p>
                 </div>
                 <div>
@@ -588,6 +743,7 @@ export function CourseEditorPage() {
                     step={activeStep}
                     onSave={(audioId) => updateStep(activeStep.id, { audioId })}
                     onDelete={() => updateStep(activeStep.id, { audioId: null })}
+                    onTranscribed={(text) => updateStep(activeStep.id, { text, audioId: null })}
                   />
                 </div>
               </div>
@@ -628,12 +784,6 @@ export function CourseEditorPage() {
                 {readyCount} of {course.steps.length}
               </span>{' '}
               step{course.steps.length !== 1 ? 's' : ''} ready
-              {!allReady && (
-                <span className="hidden md:inline text-ink-faint dark:text-ink-faint-dark">
-                  {' '}
-                  · each step needs a screenshot and a selected area
-                </span>
-              )}
             </p>
             {changedSinceDone && (
               <span className="text-xs font-medium px-2 py-1 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
@@ -647,16 +797,45 @@ export function CourseEditorPage() {
               Kept until {deletesOn}
             </span>
           </div>
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
+            {hasNewEdits ? (
+              <button
+                onClick={saveNow}
+                className="flex items-center gap-1.5 px-4 h-10 rounded-xl border-2 border-accent text-accent text-sm font-semibold hover:bg-accent/10 transition-colors"
+                title="Your work is also saved automatically"
+              >
+                <Save className="w-4 h-4" /> Save changes
+              </button>
+            ) : (
+              <span
+                key={savedFlash ? 'flash' : 'idle'}
+                className={`flex items-center gap-1.5 px-3 h-10 text-sm font-semibold ${
+                  savedFlash
+                    ? 'hs-saved-pop rounded-xl bg-teal/10 text-teal dark:text-teal-dark'
+                    : 'text-ink-faint dark:text-ink-faint-dark'
+                }`}
+              >
+                <Check className="w-4 h-4" /> Saved
+              </span>
+            )}
             <button
               onClick={() => setShowPreview(true)}
-              className="flex items-center gap-1.5 px-4 h-10 rounded-xl border border-line dark:border-line-dark text-sm font-medium text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"
+              className="flex items-center gap-1.5 px-4 h-10 rounded-xl border border-line dark:border-line-dark text-sm font-medium text-ink dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"
             >
-              <Eye className="w-4 h-4" /> Preview
+              <Eye className="w-4 h-4" /> Preview &amp; edit
             </button>
+            {isDone && (
+              <button
+                onClick={() => sharing.copyLink(course)}
+                disabled={sharing.linkBusy}
+                className="flex items-center gap-1.5 px-4 h-10 rounded-xl border border-line dark:border-line-dark text-sm font-medium text-ink dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors disabled:opacity-50"
+              >
+                <Link2 className="w-4 h-4" /> Copy link
+              </button>
+            )}
             <button
               onClick={markDone}
-              className={`flex items-center gap-1.5 px-5 h-10 rounded-xl text-sm font-semibold text-white shadow-lg transition-all ${
+              className={`flex items-center gap-1.5 px-5 h-10 rounded-xl text-sm font-bold text-white shadow-lg transition-all ${
                 allReady
                   ? 'bg-accent hover:bg-accent-dark shadow-accent/25'
                   : 'bg-accent/60 hover:bg-accent/70 shadow-none'
@@ -678,16 +857,16 @@ export function CourseEditorPage() {
 
       {/* ── Overlays ── */}
       {showPreview && (
-        <PreviewOverlay
+        <PreviewStudio
           course={course}
-          onClose={() => setShowPreview(false)}
-          onEditStep={(i) => {
-            setShowPreview(false);
-            selectStep(course.steps[i].id);
+          onSave={(next) => {
+            setCourse(next);
+            saveCourse(next);
+            setConfirmedAt(next.updatedAt);
           }}
-          onInsertAfter={(i) => {
+          onClose={(stepId) => {
             setShowPreview(false);
-            insertStep(i + 1);
+            if (stepId && course.steps.some((st) => st.id === stepId)) selectStep(stepId);
           }}
         />
       )}
@@ -719,46 +898,5 @@ export function CourseEditorPage() {
         onCancel={() => setConfirmDeleteStep(null)}
       />
     </div>
-  );
-}
-
-/**
- * Editor "Preview": resolves media for the current course and opens the
- * full-screen player, paused (press ▶ to start). Pick a step in the progress
- * bar, then "Edit step N" / "Add step after N" jumps back into the editor.
- * @param {{ course: Course, onClose: () => void, onEditStep: (i: number) => void, onInsertAfter: (i: number) => void }} props
- */
-function PreviewOverlay({ course, onClose, onEditStep, onInsertAfter }) {
-  const [steps, setSteps] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let mounted = true;
-    buildWalkthroughSteps(course).then((builtSteps) => {
-      if (mounted) {
-        setSteps(builtSteps);
-        setLoading(false);
-      }
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [course]);
-
-  if (loading) {
-    return (
-      <div className="fixed inset-0 z-50 bg-paper dark:bg-paper-dark flex items-center justify-center">
-        <Spinner />
-      </div>
-    );
-  }
-  return (
-    <WalkthroughPlayer
-      steps={steps}
-      title={course.title}
-      onExit={onClose}
-      onEditStep={onEditStep}
-      onInsertAfter={onInsertAfter}
-    />
   );
 }

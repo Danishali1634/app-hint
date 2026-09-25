@@ -65,6 +65,7 @@ function boxStyle(r, pad = 0) {
  *   enterOrigin: { x: number, y: number } | null,   // stage % the step grows from
  *   narration: { mode: string, speaking: boolean, current: number, duration: number },
  *   floatingCaption: boolean,      // false on small screens → player docks it below
+ *   continued?: boolean,         // same screenshot as the previous step: camera glides, no re-entry
  * }} props
  */
 export function WalkthroughStage({
@@ -76,6 +77,7 @@ export function WalkthroughStage({
   enterOrigin,
   narration,
   floatingCaption,
+  continued = false,
 }) {
   const region = step.region;
   const isClick = !!region && step.action !== 'look';
@@ -96,10 +98,13 @@ export function WalkthroughStage({
   } else if (phase === 'exit' && isClick) {
     stageAnimation = 'hs-stage-exit-click';
     stageOrigin = `${clickPoint.x}% ${clickPoint.y}%`;
+  } else if (phase === 'exit') {
+    stageAnimation = 'hs-stage-exit-fade';
   }
 
   // ── Pointer ──
-  const showCursor = isClick && CURSOR_PHASES.includes(phase);
+  // On a continued screenshot the pointer travels WITH the camera during focus.
+  const showCursor = isClick && (CURSOR_PHASES.includes(phase) || (continued && phase === 'focus'));
   const isPressing = isClick && phase === 'action';
 
   // ── Caption ──

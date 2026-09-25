@@ -106,16 +106,25 @@ export function useCourseSharing() {
       }
       const controller = new AbortController();
       abortRef.current = controller;
-      setVideo({ title: course.title, progress: 0 });
+      setVideo({ title: course.title, progress: 0, stage: 'prepare' });
       try {
         const steps = await buildWalkthroughSteps(course);
-        const { blob, extension } = await exportWalkthroughVideo(steps, {
+        const { blob, extension, silentSteps } = await exportWalkthroughVideo(steps, {
           title: course.title,
           signal: controller.signal,
+          onStage: (stage, fraction = 0) =>
+            setVideo((v) => (v ? { ...v, stage, progress: stage === 'voice' ? fraction : 0 } : v)),
           onProgress: (progress) => setVideo((v) => (v ? { ...v, progress } : v)),
         });
         downloadBlob(blob, `${slug(course.title) || 'walkthrough'}.${extension}`);
-        notify('Video downloaded', 'success');
+        if (silentSteps > 0) {
+          notify(
+            `Video downloaded — the AI voice couldn't load, so ${silentSteps} text step${silentSteps > 1 ? 's are' : ' is'} silent (check your internet)`,
+            'error',
+          );
+        } else {
+          notify('Video downloaded', 'success');
+        }
       } catch (err) {
         if (err?.name !== 'AbortError') {
           notify(err instanceof Error ? err.message : 'Video download failed', 'error');
@@ -134,7 +143,12 @@ export function useCourseSharing() {
   const overlays = (
     <>
       {video && (
-        <VideoExportOverlay title={video.title} progress={video.progress} onCancel={cancelVideo} />
+        <VideoExportOverlay
+          title={video.title}
+          stage={video.stage}
+          progress={video.progress}
+          onCancel={cancelVideo}
+        />
       )}
       {fallbackUrl && (
         <ShareLinkModal

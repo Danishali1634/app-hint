@@ -1,19 +1,23 @@
 /**
  * @file Slim top bar above every authoring page:
- *   [panel toggle] (logo when the sidebar is closed) ··· Courses · New course · theme
+ *   [panel toggle] (logo when the sidebar is closed) ··· Courses · New course · ⚙ · theme
+ * ⚙ opens SettingsDialog (AI voice + optional AI key).
  * The toggle opens/closes the course sidebar (components/layout/Sidebar.js);
  * the open/closed default per page is decided by Layout in AppRouter.
  * The centre stays empty on purpose — toasts appear there (ui/Toast.js).
  * Not rendered on shared links (/s/...) or embeds (/embed/...).
  */
 
+import { useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
-import { Mic, Plus, PanelLeftOpen, PanelLeftClose, LibraryBig } from 'lucide-react';
+import { Mic, Plus, PanelLeftOpen, PanelLeftClose, LibraryBig, Settings } from 'lucide-react';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { SettingsDialog } from '@/components/ui/SettingsDialog';
 
 /** @param {{ sidebarOpen: boolean, onToggleSidebar: () => void }} props */
 export function Header({ sidebarOpen, onToggleSidebar }) {
   const ToggleIcon = sidebarOpen ? PanelLeftClose : PanelLeftOpen;
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
     <header className="sticky top-0 z-30 bg-paper/70 dark:bg-paper-dark/70 backdrop-blur-xl border-b border-line/70 dark:border-line-dark/70">
@@ -65,8 +69,17 @@ export function Header({ sidebarOpen, onToggleSidebar }) {
             <Plus className="w-4 h-4" />
             <span className="hidden sm:inline">New course</span>
           </Link>
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="w-9 h-9 rounded-lg flex items-center justify-center text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"
+            aria-label="Settings"
+            title="Settings — AI voice and text"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
           <ThemeToggle />
         </nav>
+        {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       </div>
     </header>
   );

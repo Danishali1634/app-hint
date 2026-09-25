@@ -61,9 +61,20 @@ function handleStyle(handle) {
  *   region: Region | null,
  *   onRegionChange: (region: Region | null) => void,
  *   drawMode: boolean,
+ *   number?: number,     // step number shown on the box (several areas on one screenshot)
+ *   otherAreas?: { id: string, number: number, region: Region }[],  // other steps on this screenshot
+ *   onSelectArea?: (id: string) => void,                            // click one to edit it
  * }} props
  */
-export function FeatureSelector({ imageUrl, region, onRegionChange, drawMode }) {
+export function FeatureSelector({
+  imageUrl,
+  region,
+  onRegionChange,
+  drawMode,
+  number,
+  otherAreas = [],
+  onSelectArea,
+}) {
   const containerRef = useRef(null);
   const [ratio, setRatio] = useState(DEFAULT_RATIO);
 
@@ -220,6 +231,27 @@ export function FeatureSelector({ imageUrl, region, onRegionChange, drawMode }) 
         </div>
       )}
 
+      {/* Other areas on the same screenshot (other steps): numbered, click to edit */}
+      {!drawing &&
+        otherAreas.map((area) => (
+          <button
+            key={area.id}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!drawMode) onSelectArea?.(area.id);
+            }}
+            className="absolute border-2 border-dashed border-white/80 rounded-md bg-black/10 hover:bg-accent/15 hover:border-accent transition-colors"
+            style={regionStyle(area.region)}
+            aria-label={`Edit area ${area.number}`}
+            title={`Step ${area.number} — click to edit`}
+          >
+            <span className="absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full bg-ink/80 text-white text-[10px] font-bold flex items-center justify-center shadow">
+              {area.number}
+            </span>
+          </button>
+        ))}
+
       {/* Draw mode: dim the image a little and show what to do */}
       {drawMode && imageUrl && !drawing && (
         <div className="absolute inset-0 bg-black/25 pointer-events-none flex items-start justify-center pt-4">
@@ -236,6 +268,11 @@ export function FeatureSelector({ imageUrl, region, onRegionChange, drawMode }) 
           style={regionStyle(region)}
           onPointerDown={(e) => startDrag(e, 'move')}
         >
+          {number != null && (
+            <span className="absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full bg-accent text-white text-[10px] font-bold flex items-center justify-center shadow pointer-events-none">
+              {number}
+            </span>
+          )}
           {RESIZE_HANDLES.map((handle) => (
             <div
               key={handle}

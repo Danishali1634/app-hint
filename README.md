@@ -118,6 +118,7 @@ npm run dev        # http://localhost:5173
 | ------------------------ | ------------------- | -------------------------------------------------- |
 | `#/`                     | `HomePage`          | Create a course · search · View all · demo + about |
 | `#/courses`              | `LibraryPage`       | All courses: search, filter, card actions          |
+| `#/examples/:id?`        | `ExamplesPage`      | 4 playable example walkthroughs ("See examples")   |
 | `#/new`                  | `NewCoursePage`     | Create a draft course                              |
 | `#/editor/:courseId`     | `CourseEditorPage`  | Screenshot, steps, regions, text, voice, publish   |
 | `#/preview/:courseId`    | `CoursePreviewPage` | Inline player (YouTube-style) + course info        |
@@ -154,10 +155,12 @@ src/
 │   ├── storage/db.js                IndexedDB CRUD for courses + media, duplicateCourse
 │   ├── storage/settings.js          Theme in LocalStorage + <html class="dark">
 │   ├── audio/recorder.js            MediaRecorder wrapper → Promise<Blob>
-│   ├── audio/tts.js                 speechSynthesis wrapper, prefers en-IN/hi-IN voices
+│   ├── audio/tts.js                 speechSynthesis: scores voices (natural first, en-IN/hi-IN), sentence chunks, preview
+│   ├── storage/settings.js          (also) voice choice + speed, the user's own AI key
 │   ├── sharing/share.js             Course → player steps / compressed share URL (and back)
-│   ├── video/timeline.js            Walkthrough as a fixed timeline (phase start/duration)
-│   ├── video/renderFrame.js         Draws one video frame on a canvas (same look as the player)
+│   ├── video/timeline.js            Walkthrough as a fixed timeline (phase start/duration); used by the video AND the player's timeline bar
+│   ├── video/renderFrame.js         Draws one video frame: outgoing + incoming screen overlap, same-screen glide, progress bar
+│   ├── text/enhance.js              "Improve" text: offline polish, or Claude rewrite with the user's own key
 │   ├── video/exportVideo.js         canvas + voices → MediaRecorder → MP4/WebM Blob
 │   └── export/zip.js                Course ⇄ .zip (course.json + images/ + audio/)
 ├── hooks/
@@ -170,13 +173,15 @@ src/
 │   ├── useCourseSharing.js          Copy link + Download video (+ progress/fallback overlays)
 │   └── useCourseThumbnail.js        Object URL of a course's first screenshot (cards)
 ├── components/
-│   ├── ui/Header.js                 Small-screen top bar (☰ opens the sidebar)
+│   ├── ui/Header.js                 Top bar: sidebar toggle, Courses, New course, Settings, theme
+│   ├── ui/SettingsDialog.js         Voice picker (+ preview, speed) and the optional AI key
 │   ├── ui/SearchInput.js            Big search box ("/" or Ctrl/Cmd+K)
 │   ├── layout/Sidebar.js            ChatGPT-style sidebar: all courses, active one highlighted
 │   ├── course/CourseResults.js      Search results / "Did you mean" / course grid
 │   ├── course/StepGuide.js          Editor checklist: ① screenshot ② area ③ explain
 │   ├── tutorial/HowItWorksDemo.js   Looping animated demo on the Home page
 │   ├── tutorial/MiniHint.js         Tiny "what to do here" animations in the editor
+│   ├── tutorial/Highlights.js       Home: real product stats (count-up) + use cases → examples
 │   ├── walkthrough/CourseInfo.js    Course details under an inline player
 │   ├── ui/ThemeToggle.js            Sun/moon button
 │   ├── ui/Toast.js                  Toast stack renderer
@@ -186,7 +191,10 @@ src/
 │   ├── course/StepScreenshotUpload.js  Per-step screenshot: upload / drop / paste / reuse
 │   ├── course/FeatureSelector.js    Canvas (image's own ratio): draw / move / resize the region
 │   ├── course/RegionActionBar.js    "Select area of the feature" + Click vs Look choice
-│   ├── course/AudioRecorderPanel.js Record / play / delete a step's voice
+│   ├── course/AudioRecorderPanel.js Record / play / re-record / delete a step's voice
+│   ├── course/DescriptionField.js   Step text + ✨ Improve / Undo / 🔊 Listen
+│   ├── course/PreviewStudio.js      Editor preview: Watch / Edit, draft with Save / Discard
+│   ├── course/StepEditPanel.js      Edit one moment: what's said, highlighted area, add/delete
 │   ├── course/ShareLinkModal.js     Share URL + Copy button (fallback when clipboard is blocked)
 │   ├── course/CourseCard.js         Library card: thumbnail, page name, Preview/Download/Share, ⋯ menu
 │   ├── course/CourseDoneDialog.js   After "Mark done": Copy link / Download video
@@ -194,11 +202,16 @@ src/
 │   ├── course/RegionCanvas.js       ⚠️ UNUSED legacy (multi-region design) — safe to delete
 │   └── walkthrough/
 │       ├── WalkthroughPlayer.js     Phase state machine, narration, controls, keyboard
+│       ├── Timeline.js              Video-style timeline bar (+ stepTimings / formatTime)
 │       └── WalkthroughStage.js      What each phase looks like: camera, spotlight, pointer, caption
 └── pages/
     ├── Home/HomePage.js
     ├── Library/LibraryPage.js
     ├── Embed/EmbedPage.js
+    ├── Examples/ExamplesPage.js
+src/examples/
+    ├── index.js                     The 4 example walkthroughs (WalkthroughStep[])
+    └── mockScreens.js               Drawn SVG screens of a sample ERP app + their boxes
     ├── NewCourse/NewCoursePage.js
     ├── CourseEditor/CourseEditorPage.js
     ├── CoursePreview/CoursePreviewPage.js
@@ -353,10 +366,12 @@ machine**. `WalkthroughPlayer.js` decides the phase, and `WalkthroughStage.js` d
 like.
 
 ```
-enter ─► overview ─► focus ─► point ─► narrate ─► action ─► exit ─► next step
+enter ─► overview ─► focus ─► point ─► narrate ─► action ─► next step (automatically)
                        │  (look steps skip "point")     │
-                       │                                └─(Manual mode / last step)─► done
+                       │                                └─(last step)─► done
                        └─(no area: overview ─► narrate)
+
+next step on the SAME screenshot:  focus (camera + pointer glide from the old area) ─► narrate ─► …
 ```
 
 | Phase      | What the viewer sees                                                                                                      | Ends after                        |
@@ -367,8 +382,8 @@ enter ─► overview ─► focus ─► point ─► narrate ─► action ─
 | `point`    | Animated pointer glides in from the corner onto the button (click only)                                                   | 1.0 s                             |
 | `narrate`  | Caption bubble next to the area; recorded voice, or TTS of the text                                                       | voice ends (or 2.4 s if silent)   |
 | `action`   | Click: pointer presses, ripple rings, ring flashes. Look: short hold                                                      | 1.0 s / 0.7 s                     |
-| `exit`     | Click: dive into the button. Look: zoom back out                                                                          | 0.5 s / 1.0 s                     |
-| `done`     | Final frame. Next pulses (Manual) or "That's the whole feature!" (last)                                                   | user                              |
+| `exit`     | The previous screen, drawn **under** the next one while it enters: dives into the clicked button, or fades                | 0.65 s (overlaps `enter`)         |
+| `done`     | Last step only: "That's the whole feature!" + Watch again                                                                 | user                              |
 
 - **Camera math** (`camera.js`): the image layer is moved with
   `translate(tx%, ty%) scale(s)`. `computeFocusView(region)` picks `s` so the area fills about 42%
@@ -380,12 +395,18 @@ enter ─► overview ─► focus ─► point ─► narrate ─► action ─
   screenshot's real ratio. The stage is the largest box of that exact ratio that fits.
 - **Narration** (`useNarration`): recorded audio ▶ TTS of `step.text` ▶ nothing. TTS has a safety
   timer so a browser that never fires "finished" can't freeze the walkthrough.
-- **The viewer is in control:** nothing starts without a click. Each step plays its story, then
-  **waits** (Manual is the default) with a pulsing Next button. After the last step it stops on
-  "That's the whole feature!". The Auto toggle is optional.
-- **Controls:** ⏮ start over · ◀ prev · ▶/⏸ play-pause · ▶ next · ↺ replay step · step dots
-  (click to jump) · Auto/Manual.
-- **Keyboard:** `←` `→` `Space` `Esc`.
+- **One piece, like a video:** nothing starts without a click, but after ▶ every step flows into
+  the next on its own. There is no Next button. The previous screen stays on stage (`leaving`)
+  while the next one enters, so there is never a blank frame. Consecutive steps on the **same
+  screenshot** keep the same stage (`stageKey`), so the camera and pointer glide from one area to
+  the next with no cut. After the last step it stops on "That's the whole feature!".
+- **Controls:** ▶/⏸ and a **video timeline** (`walkthrough/Timeline.js`): one bar that fills
+  continuously, thin gaps where steps begin, the step name on hover, click to jump, and
+  `0:12 / 0:45`. Step lengths use the same phase plan as the video export
+  (`buildTimeline`), with estimated speaking times. A recording's real length replaces the
+  estimate once it has played.
+- **Keyboard:** `Space` play/pause · `←` `→` jump a step · `Esc` exit. Keys are ignored while
+  typing in a text field.
 - **Small screens** (< 640 px): the caption docks under the screenshot instead of floating.
 - **Reduced motion:** with the OS "reduce motion" setting, animations become instant but the
   sequence stays the same.
@@ -393,21 +414,110 @@ enter ─► overview ─► focus ─► point ─► narrate ─► action ─
 **Nothing ever plays by itself.** Every player opens paused on step 1 with a big ▶ over the
 screenshot, like a YouTube video.
 
-| Entry point      | Where                                 | Layout                                            |
-| ---------------- | ------------------------------------- | ------------------------------------------------- |
-| Editor "Preview" | `CourseEditorPage` → `PreviewOverlay` | full screen + "Edit step N" / "Add step after N"  |
-| Preview page     | `#/preview/:id`                       | **inline** in the page (no pop-up)                |
-| Shared link      | `#/s/:slug/:encoded`                  | **inline** in the page (no pop-up)                |
-| Embed            | `#/embed/:slug/:encoded`              | fills the iframe; **compact** below 480 px height |
+| Entry point      | Where                                | Layout                                            |
+| ---------------- | ------------------------------------ | ------------------------------------------------- |
+| Editor "Preview" | `CourseEditorPage` → `PreviewStudio` | full screen, Watch / **Edit** (see below)         |
+| Preview page     | `#/preview/:id`                      | **inline** in the page (no pop-up)                |
+| Shared link      | `#/s/:slug/:encoded`                 | **inline** in the page (no pop-up)                |
+| Embed            | `#/embed/:slug/:encoded`             | fills the iframe; **compact** below 480 px height |
 
 - **Compact mode** (automatic when the player is under `COMPACT_MAX_HEIGHT` = 480 px, e.g. the
   250 px embed): no top bar, small controls, and a small caption over the screenshot.
-- **Edit from the progress bar** (editor preview only): the progress bar shows numbered steps.
-  Pick one, then **Edit step N** closes the preview on that step, or **Add step after N** inserts
-  a new step right there.
+- **Preview studio** (`components/course/PreviewStudio.js`, editor "Preview" only):
+  - **Watch** (default): the player at full size, plus one **Edit** button.
+  - **Edit**: the player pauses and a panel (`StepEditPanel.js`) opens beside it for the moment
+    on screen. To pick another moment, press ▶ and pause where you want, or click the timeline.
+    While it plays, the panel says "Pause at the moment you want to change".
+  - The panel shows three things:
+    1. **What's said.** The recorded voice if there is one (re-record or remove it), with the
+       caption under it. Otherwise the text, with ✨ Improve and 🔊 Listen, plus "Or record your
+       own voice".
+    2. **Highlighted area.** Change it, switch Click/Look, or replace the screenshot.
+    3. **Add a step after this** / **Delete this step.**
+  - **Draft, not autosave.** **Save** writes the course and confirms with a ✓ Saved animation.
+    **Discard** throws the draft away, so nothing goes live. Media from a discarded draft is
+    deleted, and media the saved course no longer uses is cleaned up. Closing with unsaved
+    changes asks first.
 
-TTS (`services/audio/tts.js`) picks the first available voice in this order: `en-IN` →
-`hi-IN` → any English voice. That's why the UI calls it the "AI Hinglish voice".
+**Several areas on one screenshot:** after selecting an area, **+ Add another area** creates the
+next step on the _same_ screenshot, and starts straight in "drag a box" mode. Each area is its
+own numbered step (1, 2, 3…) with its own description and voice. The editor shows the other
+areas as numbered dashed boxes; click one to edit it. There are chips for "Areas on this
+screenshot". Because the steps share the screenshot, the player and the video glide the camera
+from area to area as one scene. There's no new data format: consecutive steps simply share an
+`imageId`.
+
+**Small files:**
+
+- Voices are recorded as Opus at 32 kbps, which is clear for speech.
+- **Upload audio** lets you use an existing voice file (MP3, M4A, WAV, …) for a step. It is
+  re-encoded to the same small format (`compressVoiceFile`), so a 200 KB WAV becomes about
+  20 KB. This takes as long as the audio plays; the limit is 3 minutes per step.
+- Video: 2 Mbps H.264 at 720p with 96 kbps audio, about 7 MB per minute.
+- Share and embed links:
+  - screenshots are capped at 1280 px and WebP quality 0.6 (links only; the app keeps the
+    originals);
+  - area numbers are rounded, and ids are shortened.
+  - A link still contains the whole course, so it can't be as short as a bit.ly link without an
+    online service to store courses.
+
+**What is said at each step** is shown as a pill in the step list and in the edit panel: **Your
+voice** (a recording, which plays first), **Text · AI voice**, or **Nothing to say yet**.
+
+**Voice → text** (`services/audio/transcribe.js`): **Convert to text (use AI voice)** on a
+recording, or **Convert all voices to text** in the editor header, turns recordings into the
+step text using Whisper, which runs in the browser. The recording is then removed, so the AI
+voice reads the text. The first use downloads the model once (~80 MB), and the audio never
+leaves the browser. The text is written in English, because Whisper translates Hindi/Hinglish
+speech.
+
+**Clear recordings** (`services/audio/recorder.js`):
+
+- The browser's echo and noise suppression and auto gain run first.
+- A Web Audio clean-up chain follows: high-pass 90 Hz (hum and rumble), low-pass 9 kHz (hiss),
+  then a compressor with make-up gain so every word is equally clear.
+- Recordings are Opus at 128 kbps.
+- The video mixes voices through another gentle compressor.
+
+**Video voice for text steps** (`services/audio/neuralVoice.js`): the browser's speechSynthesis
+can't be recorded. When exporting, text steps without a recording are spoken by a Piper neural
+voice running in WebAssembly, and that audio is mixed into the video. The first export
+downloads the voice once (~60 MB, cached in OPFS).
+
+**Video ending:** after the last step the video dims, then:
+
+- a check mark draws itself in a glowing circle, with sparkles;
+- "You're all set!" appears, with "Now you know: <title>";
+- `drawOutro` in `renderFrame.js` draws it; `END_HOLD_MS` is 4.8 s.
+
+**Timeline seeking:** clicking the timeline jumps to that exact moment (step, phase and offset
+into the voice), even inside the step that is playing (`momentAt` → `seekTo`). In edit mode,
+"+" buttons on the timeline insert a step before step 1, between any two steps, or at the end.
+The edit panel also has **Add step before / after**.
+
+**Voice priority:** a recorded voice always wins; text-to-speech is only used when a step has no
+recording. The video export follows the same rule.
+
+**AI voice** (`services/audio/tts.js`): browsers ship very different voices, so each one is
+scored. Natural, neural or online voices (Edge's "Natural" voices, Chrome's Google voices, and
+Apple's Premium/Enhanced voices) rank first, and `en-IN` / `hi-IN` voices are preferred.
+Long text is spoken sentence by sentence, which sounds more natural and avoids Chrome's
+long-utterance cut-off. **Settings** (gear icon) lets you choose the voice, preview it, and set
+the speed. The choice is stored in LocalStorage (`hint-studio-voice`).
+
+**Improve text** (`services/text/enhance.js`, button ✨ under every description):
+
+- Without a key, `polishText()` tidies spacing, punctuation and capitals offline, and never
+  changes your words.
+- With your own Anthropic API key (Settings → "Improve text with AI"), it rewrites the step with
+  Claude (`claude-opus-5`, low effort) into one or two clear spoken sentences. It keeps Hinglish,
+  English, and UI labels exactly as written.
+  - The SDK is loaded lazily, only on first use.
+  - Server-side fallbacks (`fallbacks: 'default'`) retry on a fallback model if a request is
+    declined.
+  - The key is stored only in this browser and sent only to Anthropic. The browser call is
+    acceptable **only** because it is the user's own key. Never ship a shared key this way.
+- **Undo** restores the previous text.
 
 ### 6.6 Mark done → Copy link / Download video
 
@@ -529,7 +639,7 @@ loudly instead of silently returning `null`.
 ## 8. React patterns used in this codebase
 
 **1. The `mounted` guard for async effects.** It's used in the editor, `AudioRecorderPanel` and
-`PreviewOverlay`:
+`PreviewStudio`:
 
 ```js
 useEffect(() => {
@@ -547,7 +657,7 @@ Without it, switching steps quickly could let an **old** result overwrite the **
 state.
 
 **2. The "latest callback" ref** (`WalkthroughPlayer`). The keyboard listener is registered once,
-and `keyHandlersRef.current = { goNext, goPrev, togglePlay, onExit }` is reassigned on every render.
+and `keyHandlersRef.current = { goNext, goPrev, togglePlay, onExit, embedded }` is reassigned on every render.
 The listener reads the ref, so it never calls an outdated closure.
 
 **2b. A state machine driven by effects** (`WalkthroughPlayer`). One effect runs a `setTimeout`
@@ -607,30 +717,30 @@ dev only, this is why; it doesn't happen in production.
 
 ### Symptom → where to look
 
-| Symptom                                | Look at                                                                                                                    |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Course missing / "Course not found"    | `getCourse` in `services/storage/db.js`; check the id in the URL vs the `courses` store                                    |
-| Edits not saved after refresh          | `updateCourse` / `updateStep` in `CourseEditorPage.js` (they call `saveCourse`)                                            |
-| Screenshot not showing in editor       | effect on `activeImageId` in `CourseEditorPage.js` → `getStepImageId`; does the id exist in the `media` store?             |
-| Region drawing / dragging wrong        | `FeatureSelector.js` → `getRelativePos`, `handleMove`, `handleUp`                                                          |
-| Zoom lands in the wrong place          | `camera.js` → `computeFocusView`; is the stage ratio right? (`useImageAspectRatios`)                                       |
-| Walkthrough stuck on a step            | `phase` in React DevTools; `phaseDuration` + timed effect in `WalkthroughPlayer.js`; `useNarration` (onEnd / safety timer) |
-| Animation looks wrong / too fast       | `.hs-*` classes in `index.css` (durations must match `DURATION` in `WalkthroughPlayer.js`)                                 |
-| Next screen doesn't "open" from button | step `action` must be `'click'`; `enterOrigin` from `focusedCenter()`                                                      |
-| "Microphone permission denied"         | `useAudioRecorder.start` catch block; site must be HTTPS/localhost; browser site settings                                  |
-| Recording saved but silent/empty       | `services/audio/recorder.js` → `pickMimeType`, `ondataavailable`, `onstop`                                                 |
-| Player doesn't speak text              | `services/audio/tts.js` → `pickHinglishVoice` (voices load async; check `speechSynthesis.getVoices()` in console)          |
-| Audio won't auto-start                 | browser autoplay policy → `onBlocked` in `useNarration` pauses the player; press Play                                      |
-| Auto-advance timing                    | `DURATION` constants at top of `WalkthroughPlayer.js`                                                                      |
-| Share link "Cannot Open Course"        | link truncated by the chat app / browser (too long) → `decodeShareableCourse` returns null                                 |
-| Search doesn't find a course           | `searchCourses` in `utils/search.js`; check `title` / `pageName` in the `courses` store                                    |
-| "Title already exists" wrongly         | `titleKey` of the other course (`normalizeTitle`); `findCourseByTitle` in `db.js`                                          |
-| Course vanished                        | auto-delete: `updatedAt` older than 90 days → `purgeExpiredCourses`                                                        |
-| Video download fails / is choppy       | `services/video/exportVideo.js`; the tab must stay visible; `isVideoExportSupported()`                                     |
-| Video looks different from player      | `renderFrame.js` vs `WalkthroughStage.js` (both use `utils/camera.js` + `WALKTHROUGH_TIMING`)                              |
-| Import fails                           | `importCourseZip` in `services/export/zip.js` (missing `course.json`, bad version)                                         |
-| Theme not persisting                   | `services/storage/settings.js` + `hooks/useTheme.js`                                                                       |
-| Page blank after navigation            | lazy-import path in `AppRouter.js`; check the console for chunk load errors                                                |
+| Symptom                                | Look at                                                                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Course missing / "Course not found"    | `getCourse` in `services/storage/db.js`; check the id in the URL vs the `courses` store                                               |
+| Edits not saved after refresh          | `updateCourse` / `updateStep` in `CourseEditorPage.js` (they call `saveCourse`)                                                       |
+| Screenshot not showing in editor       | effect on `activeImageId` in `CourseEditorPage.js` → `getStepImageId`; does the id exist in the `media` store?                        |
+| Region drawing / dragging wrong        | `FeatureSelector.js` → `getRelativePos`, `handleMove`, `handleUp`                                                                     |
+| Zoom lands in the wrong place          | `camera.js` → `computeFocusView`; is the stage ratio right? (`useImageAspectRatios`)                                                  |
+| Walkthrough stuck on a step            | `phase` in React DevTools; `phaseDuration` + timed effect in `WalkthroughPlayer.js`; `useNarration` (onEnd / safety timer)            |
+| Animation looks wrong / too fast       | `.hs-*` classes in `index.css` (durations must match `WALKTHROUGH_TIMING`)                                                            |
+| Next screen doesn't "open" from button | step `action` must be `'click'`; `enterOrigin` from `focusedCenter()`                                                                 |
+| "Microphone permission denied"         | `useAudioRecorder.start` catch block; site must be HTTPS/localhost; browser site settings                                             |
+| Recording saved but silent/empty       | `services/audio/recorder.js` → `pickMimeType`, `ondataavailable`, `onstop`                                                            |
+| Player doesn't speak text              | `services/audio/tts.js` → `scoreVoice` / `listVoices` (voices load async; check `speechSynthesis.getVoices()`), Settings voice choice |
+| Audio won't auto-start                 | browser autoplay policy → `onBlocked` in `useNarration` pauses the player; press Play                                                 |
+| Step timing / timeline length          | `WALKTHROUGH_TIMING` in `constants/index.js` (player, timeline bar and video share it)                                                |
+| Share link "Cannot Open Course"        | link truncated by the chat app / browser (too long) → `decodeShareableCourse` returns null                                            |
+| Search doesn't find a course           | `searchCourses` in `utils/search.js`; check `title` / `pageName` in the `courses` store                                               |
+| "Title already exists" wrongly         | `titleKey` of the other course (`normalizeTitle`); `findCourseByTitle` in `db.js`                                                     |
+| Course vanished                        | auto-delete: `updatedAt` older than 90 days → `purgeExpiredCourses`                                                                   |
+| Video download fails / is choppy       | `services/video/exportVideo.js`; the tab must stay visible; `isVideoExportSupported()`                                                |
+| Video looks different from player      | `renderFrame.js` vs `WalkthroughStage.js` (both use `utils/camera.js` + `WALKTHROUGH_TIMING`)                                         |
+| Import fails                           | `importCourseZip` in `services/export/zip.js` (missing `course.json`, bad version)                                                    |
+| Theme not persisting                   | `services/storage/settings.js` + `hooks/useTheme.js`                                                                                  |
+| Page blank after navigation            | lazy-import path in `AppRouter.js`; check the console for chunk load errors                                                           |
 
 ---
 
@@ -658,9 +768,12 @@ dev only, this is why; it doesn't happen in production.
 1. **Share URLs are long.** The whole course is inside the link. Screenshots are compressed, but
    a 2-step test course still gives a ~44,000-character link. Recorded voices are not compressed.
    Some chat apps truncate very long links; download the video instead.
-2. **Video: text-to-speech is silent.** The browser speaks TTS outside the page, so it can't be
-   recorded. Steps without a recorded voice show their caption in the video but have no sound.
-   Record your voice for narrated videos.
+2. **Video voice needs a one-time download.** The AI voice in videos is a neural English voice
+   (~60 MB, downloaded on the first export). If it can't load (offline), text steps are silent,
+   and you're told how many. It can sound different from the preview voice, which is the
+   browser's own.
+   **AI voice quality depends on the browser.** Edge has the most natural voices, then Chrome's
+   Google voices. Pick one in Settings; there is no server-side voice.
 3. **Video records in real time,** and the tab must stay visible while it does (browsers throttle
    hidden tabs).
 4. **Single browser.** Data lives in one browser's IndexedDB. Clearing site data deletes all
@@ -717,3 +830,36 @@ Serve over **HTTPS**, or the microphone won't be available.
   Inter). Accent copies live in `index.css` (glows) and `services/video/renderFrame.js` (video).
 - **Embeds and storage:** in third-party iframes browsers may block `localStorage`.
   `services/storage/settings.js` falls back to an in-memory theme, so embeds never crash.
+
+### Home content, examples and embeds
+
+- **No reviews or invented customers.** The home page shows only facts about the product. The
+  stats (`10` steps per course, `3` ways to share, `0` sign-ups or servers, `90` days clean-up)
+  are read from the same constants the code enforces, so they can never drift. Use cases link to
+  playable examples.
+- **Examples** (`#/examples`, opened by "See examples" on Home and in the sidebar): four
+  **complete feature flows** of a sample ERP app, 6–9 steps each, played in the real player.
+  Press ▶ once and each plays to the end on its own:
+  - Repack a return and check the trend (`return-repack`)
+  - Purchase order: create, approve, receive (`purchase-order`)
+  - Monthly sales report: pick a month and export (`monthly-report`)
+  - Find a customer and get their statement (`customer-lookup`)
+
+  Steps that share a screen reuse the same image, so the camera glides between them. Their screens are SVG drawn in
+  `src/examples/mockScreens.js`, and the highlighted regions come from the same boxes the screens
+  draw, so the zoom always lands exactly. To add an example, add screens there and an entry in
+  `src/examples/index.js`.
+
+- **Embeds are watch-only.** Inside an iframe only `#/embed/...` renders. Any other page shows
+  `EmbedOnlyNotice`, so a host site's visitors can never create or edit courses.
+- **Compact embed player** (under 480 px tall, e.g. the 250 px embed):
+  - the screenshot fills the frame over a blurred copy of itself
+  - title and ▶ appear before playing
+  - the caption sits at the top
+  - ▶/⏸ and the video timeline sit on a gradient; they auto-hide while playing and come back
+    on hover
+  - there's a **fullscreen** button (inline players have one too)
+- **Animations:** the sidebar slides and resizes when opened or closed (desktop), or slides in
+  as a drawer with a fading backdrop (phone). Home sections reveal on scroll (`useInView` +
+  `.reveal`). Everything respects the OS "reduce motion" setting.
+- **Responsive:** every page was checked at 390 px, 820 px and 1440 px with no sideways scrolling.

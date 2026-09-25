@@ -38,6 +38,7 @@ const ACTION_OPTIONS = [
  *   onStartSelect: () => void,
  *   onCancelSelect: () => void,
  *   onActionChange: (action: StepAction) => void,
+ *   compact?: boolean,   // short version for the preview studio's edit panel
  * }} props
  */
 export function RegionActionBar({
@@ -47,7 +48,20 @@ export function RegionActionBar({
   onStartSelect,
   onCancelSelect,
   onActionChange,
+  compact = false,
 }) {
+  if (compact) {
+    return (
+      <CompactActionBar
+        hasRegion={hasRegion}
+        drawMode={drawMode}
+        action={action}
+        onStartSelect={onStartSelect}
+        onCancelSelect={onCancelSelect}
+        onActionChange={onActionChange}
+      />
+    );
+  }
   if (drawMode) {
     return (
       <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-accent-soft/60 dark:bg-accent-soft-dark/40 border border-accent/40">
@@ -122,6 +136,82 @@ export function RegionActionBar({
       <p className="text-xs text-ink-faint dark:text-ink-faint-dark">
         {activeOption.hint} Drag the box to move it, or a corner to resize.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Edit-panel version: no tutorials, just the choices, big and obvious.
+ *   selecting → "Drag a box over the feature" + Cancel
+ *   no area   → one "Select area" button
+ *   area set  → "What happens here?" Click / Look as two large tiles + Reselect
+ */
+function CompactActionBar({
+  hasRegion,
+  drawMode,
+  action,
+  onStartSelect,
+  onCancelSelect,
+  onActionChange,
+}) {
+  if (drawMode) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-accent/10 border border-accent/40">
+        <Crosshair className="w-4 h-4 text-accent flex-shrink-0" />
+        <p className="text-sm font-semibold text-ink dark:text-white flex-1">
+          Drag a box over the feature
+        </p>
+        <button
+          onClick={onCancelSelect}
+          className="px-2.5 py-1 rounded-lg text-sm text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+  if (!hasRegion) {
+    return (
+      <button
+        onClick={onStartSelect}
+        className="hs-attention w-full flex items-center justify-center gap-2 h-11 rounded-xl bg-accent text-white font-semibold hover:bg-accent-dark shadow-glow"
+      >
+        <Crosshair className="w-5 h-5" /> Select area
+      </button>
+    );
+  }
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-sm font-semibold text-ink dark:text-white">What happens here?</p>
+        <button
+          onClick={onStartSelect}
+          className="flex items-center gap-1 text-xs font-medium text-ink-soft dark:text-ink-faint-dark hover:text-accent"
+        >
+          <Crosshair className="w-3.5 h-3.5" /> Reselect area
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="What happens here">
+        {ACTION_OPTIONS.map(({ value, Icon, label }) => {
+          const active = action === value;
+          return (
+            <button
+              key={value}
+              role="radio"
+              aria-checked={active}
+              onClick={() => onActionChange(value)}
+              className={`flex items-center justify-center gap-2 h-12 rounded-xl border-2 text-sm font-semibold transition-colors ${
+                active
+                  ? 'border-accent bg-accent text-white shadow-glow'
+                  : 'border-line dark:border-line-dark text-ink-soft dark:text-ink-soft-dark hover:border-accent/50'
+              }`}
+            >
+              <Icon className="w-5 h-5" /> {value === 'click' ? 'Click it' : 'Just look'}
+              <span className="sr-only">{label}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -36,6 +36,23 @@ function estimateSpeechMs(text) {
   return 3000 + text.length * 110;
 }
 
+/**
+ * The part of `text` still to be spoken `offsetMs` into it: from the start of
+ * the sentence playing at that moment (timing estimate as in Timeline.speakingMs).
+ */
+function textFromOffset(text, offsetMs) {
+  const trimmed = text.trim();
+  const fraction = Math.min(1, Math.max(0, (offsetMs - 600) / (trimmed.length * 65)));
+  const target = fraction * trimmed.length;
+  const sentences = trimmed.match(/[^.!?।]+[.!?।]*\s*/g) || [trimmed];
+  let pos = 0;
+  for (let i = 0; i < sentences.length; i++) {
+    if (pos + sentences[i].length > target) return sentences.slice(i).join('').trim();
+    pos += sentences[i].length;
+  }
+  return sentences[sentences.length - 1].trim();
+}
+
 /** True if this step has anything to say (and the browser can say it). */
 export function hasNarration(step) {
   if (!step) return false;
@@ -90,7 +107,7 @@ export function useNarration() {
   }, [clearTtsTimer]);
 
   const start = useCallback(
-    (step, { onEnd, onBlocked }) => {
+    (step, { onEnd, onBlocked, offsetMs = 0 }) => {
       stop();
       const token = tokenRef.current;
       let finished = false;
@@ -107,6 +124,8 @@ export function useNarration() {
         setMode('recorded');
         const audio = new Audio(step.audioData);
         audioRef.current = audio;
+        // Timeline seek into the middle of the recording.
+        if (offsetMs > 0) audio.currentTime = offsetMs / 1000;
         audio.onloadedmetadata = () =>
           setProgress((p) => ({
             ...p,
@@ -125,9 +144,12 @@ export function useNarration() {
       // 2. Text-to-speech fallback.
       if (step.text?.trim() && isTTSSupported()) {
         setMode('tts');
-        ttsFallbackRef.current = { finish, ms: estimateSpeechMs(step.text) };
+        // Timeline seek: speech can't start mid-word, so start from the sentence
+        // that would be playing at that moment.
+        const text = offsetMs > 0 ? textFromOffset(step.text, offsetMs) : step.text;
+        ttsFallbackRef.current = { finish, ms: estimateSpeechMs(text) };
         armTtsTimer();
-        ttsRef.current.speak(step.text, finish);
+        ttsRef.current.speak(text, finish);
         return;
       }
 

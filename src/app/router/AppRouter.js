@@ -14,6 +14,7 @@
  * ROUTES
  *   #/                     HomePage            create a course · search · "View all"
  *   #/courses              LibraryPage         all courses: search, filter, actions
+ *   #/examples/:id?        ExamplesPage        playable example walkthroughs
  *   #/new                  NewCoursePage       create a draft course
  *   #/editor/:courseId     CourseEditorPage    screenshot, steps, regions, voice
  *   #/preview/:courseId    CoursePreviewPage   summary + full walkthrough playback
@@ -49,6 +50,9 @@ import { ThemeProvider } from '@/hooks/useTheme';
 const HomePage = lazy(() => import('@/pages/Home/HomePage').then((m) => ({ default: m.HomePage })));
 const LibraryPage = lazy(() =>
   import('@/pages/Library/LibraryPage').then((m) => ({ default: m.LibraryPage })),
+);
+const ExamplesPage = lazy(() =>
+  import('@/pages/Examples/ExamplesPage').then((m) => ({ default: m.ExamplesPage })),
 );
 const EmbedPage = lazy(() =>
   import('@/pages/Embed/EmbedPage').then((m) => ({ default: m.EmbedPage })),
@@ -155,6 +159,8 @@ function AppRoutes() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/courses" element={<LibraryPage />} />
+        <Route path="/examples" element={<ExamplesPage />} />
+        <Route path="/examples/:exampleId" element={<ExamplesPage />} />
         <Route path="/new" element={<NewCoursePage />} />
         <Route path="/editor/:courseId" element={<CourseEditorPage />} />
         <Route path="/preview/:courseId" element={<CoursePreviewPage />} />

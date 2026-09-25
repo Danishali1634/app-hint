@@ -3,12 +3,13 @@
  *
  * It does NOT list saved courses by default (they're in the sidebar and on
  * #/courses). Sections, top → bottom:
- *   1. Hero            — what Hint Studio is + "Create new course"
+ *   1. Hero            — what Hint Studio is · "Create new course" · "See examples"
  *   2. Find a course   — search (results appear only while typing) · View all
  *   3. See it in action— looping animated demo (components/tutorial/HowItWorksDemo)
  *   4. How it works    — the 3 steps to make a walkthrough
- *   5. What teams say (testimonials marquee — SAMPLE quotes, replace before launch)
- *   6. What we stand for
+ *   5. By the numbers  — real product facts, counting up (tutorial/Highlights)
+ *   6. Where it helps  — use cases, each opening a playable example (#/examples)
+ *   7. What we stand for
  *
  * Search matches title and page name; with no match it shows "No results
  * found" + "Did you mean" suggestions (utils/search.js via CourseResults).
@@ -29,6 +30,7 @@ import {
   ShieldCheck,
   Sparkles,
   Globe,
+  PlayCircle,
 } from 'lucide-react';
 import { searchCourses } from '@/utils/search';
 import { useCourseLibrary } from '@/hooks/useCourseLibrary';
@@ -36,7 +38,7 @@ import { SearchInput } from '@/components/ui/SearchInput';
 import { CourseResults } from '@/components/course/CourseResults';
 import { Spinner } from '@/components/ui/Spinner';
 import { HowItWorksDemo } from '@/components/tutorial/HowItWorksDemo';
-import { Testimonials } from '@/components/tutorial/Testimonials';
+import { ProductStats, UseCases } from '@/components/tutorial/Highlights';
 
 const HOW_IT_WORKS = [
   {
@@ -113,13 +115,19 @@ export function HomePage() {
           feature, shows the click and opens the next screen — so anyone understands it, even
           without reading.
         </p>
-        <div className="mt-9 flex justify-center">
+        <div className="mt-9 flex flex-col sm:flex-row items-center justify-center gap-3">
           <button
             onClick={() => navigate('/new')}
             className="group flex items-center gap-2 px-7 py-3.5 rounded-2xl bg-accent text-white text-base font-semibold shadow-glow hover:bg-accent-dark transition-all"
           >
             <Plus className="w-5 h-5" /> Create new course
             <ArrowRight className="w-4 h-4 -ml-0.5 opacity-70 group-hover:translate-x-0.5 transition-transform" />
+          </button>
+          <button
+            onClick={() => navigate('/examples')}
+            className="flex items-center gap-2 px-6 py-3.5 rounded-2xl border border-line dark:border-line-dark bg-panel/70 dark:bg-panel-dark/70 backdrop-blur text-base font-semibold text-ink dark:text-ink-soft-dark hover:border-accent hover:text-accent transition-colors"
+          >
+            <PlayCircle className="w-5 h-5" /> See examples
           </button>
         </div>
       </section>
@@ -233,21 +241,37 @@ export function HomePage() {
         </div>
       </section>
 
-      {/* ── 5. What teams say ── */}
+      {/* ── 5. By the numbers (real product facts) ── */}
       <section className="mt-24">
         <div className="text-center mb-10">
-          <p className={SECTION_EYEBROW}>What teams say</p>
+          <p className={SECTION_EYEBROW}>By the numbers</p>
           <h2 className="text-2xl sm:text-3xl font-bold text-ink dark:text-white">
-            Built for people who explain software
+            Simple by design
           </h2>
         </div>
-        {/* Full-bleed within the page column so the marquee has room to move */}
-        <div className="-mx-4 sm:-mx-6">
-          <Testimonials />
-        </div>
+        <ProductStats />
       </section>
 
-      {/* ── 6. What we stand for ── */}
+      {/* ── 6. Where it helps ── */}
+      <section className="mt-24">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 mb-10">
+          <div>
+            <p className={SECTION_EYEBROW}>Where it helps</p>
+            <h2 className="text-2xl sm:text-3xl font-bold text-ink dark:text-white">
+              One tool, every “how do I…?”
+            </h2>
+          </div>
+          <button
+            onClick={() => navigate('/examples')}
+            className="self-start sm:self-auto flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline"
+          >
+            <PlayCircle className="w-4 h-4" /> See all examples
+          </button>
+        </div>
+        <UseCases />
+      </section>
+
+      {/* ── 7. What we stand for ── */}
       <section className="mt-24">
         <div className="relative overflow-hidden rounded-[2rem] border border-line dark:border-line-dark bg-gradient-to-br from-accent/10 via-panel to-violet/10 dark:from-accent/15 dark:via-panel-dark dark:to-violet/15 p-8 sm:p-12">
           <div className="max-w-2xl">

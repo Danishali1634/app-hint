@@ -12,6 +12,9 @@
     "format:check": "prettier --check \"src/**/*.{js,css}\" \"*.{js,json,md}\""
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@diffusionstudio/vits-web": "^1.0.3",
+    "@huggingface/transformers": "^4.3.0",
     "@supabase/supabase-js": "^2.57.4",
     "idb": "^8.0.3",
     "jszip": "^3.10.2",

@@ -4,7 +4,7 @@
  *
  * CONTENTS (top → bottom)
  *   logo · "New course" · search (filters the list below)
- *   Home · All courses
+ *   Home · All courses · Examples
  *   Your courses, grouped by last change: Today / Yesterday / Previous 7 days /
  *   Previous 30 days / Older. Active course (open in the editor or preview) is
  *   highlighted; hover shows a ▶ Preview shortcut.
@@ -33,6 +33,7 @@ import {
   FileVideo,
   HardDrive,
   PanelLeftClose,
+  Sparkles,
 } from 'lucide-react';
 import { useCourseList } from '@/hooks/useCourseList';
 import { searchCourses } from '@/utils/search';
@@ -174,6 +175,9 @@ export function Sidebar({ open, onClose }) {
               <span className="ml-auto text-xs text-ink-faint dark:text-ink-faint-dark">
                 {courses.length}
               </span>
+            </NavLink>
+            <NavLink to="/examples" className={NAV_CLASS}>
+              <Sparkles className="w-4 h-4" /> Examples
             </NavLink>
           </nav>
 

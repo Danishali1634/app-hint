@@ -50,6 +50,17 @@ import { getStepAction, getStepImageId } from '@/utils/course';
 const SHARE_FORMAT_VERSION = 3;
 
 /**
+ * Screenshots inside LINKS are the biggest part of the URL, so they are
+ * shrunk harder than anywhere else (the app itself, the player and the video
+ * keep the originals): at most 1280 px wide, WebP quality 0.6. Text in the
+ * screenshot stays readable, even when the player zooms in.
+ */
+const LINK_IMAGE = { maxWidth: 1280, quality: 0.6 };
+
+/** 12.3456789 → 12.3 (a tenth of a percent is far below one pixel on screen). */
+const round1 = (n) => Math.round(n * 10) / 10;
+
+/**
  * Compact course format stored inside share URLs. Short keys (`v`, `c`) keep the
  * URL a little smaller.
  * @typedef {Object} ShareableCourse
@@ -117,8 +128,28 @@ export async function buildWalkthroughSteps(course) {
 export async function buildShareableCourse(course) {
   const { images, steps } = await resolveCourseMedia(course);
   for (const key of Object.keys(images)) {
-    if (images[key]) images[key] = await compressImageDataUrl(images[key]);
+    if (images[key]) images[key] = await compressImageDataUrl(images[key], LINK_IMAGE);
   }
+  // Short keys/ids and rounded numbers: every character counts in a URL.
+  const imageKeys = {};
+  const shortImages = {};
+  Object.keys(images).forEach((key, n) => {
+    imageKeys[key] = `i${n}`;
+    shortImages[`i${n}`] = images[key];
+  });
+  const shortSteps = steps.map((step, n) => ({
+    ...step,
+    id: `s${n}`,
+    imageKey: step.imageKey ? imageKeys[step.imageKey] : null,
+    region: step.region
+      ? {
+          x: round1(step.region.x),
+          y: round1(step.region.y),
+          w: round1(step.region.w),
+          h: round1(step.region.h),
+        }
+      : null,
+  }));
   return {
     v: SHARE_FORMAT_VERSION,
     c: {
@@ -131,8 +162,8 @@ export async function buildShareableCourse(course) {
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
       publishedAt: course.publishedAt,
-      images,
-      steps,
+      images: shortImages,
+      steps: shortSteps,
     },
   };
 }

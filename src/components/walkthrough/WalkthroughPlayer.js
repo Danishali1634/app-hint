@@ -17,11 +17,11 @@
  * button over the screenshot (like a YouTube video). Nothing moves or speaks
  * until the viewer clicks it.
  *
- * THE VIEWER IS IN CONTROL
- *   Nothing ever starts without a click. Each step plays its story and then
- *   WAITS ("Manual" mode, the default): the Next button pulses until pressed.
- *   After the last step the player simply stops on "That's the whole feature!".
- *   The "Auto" toggle is optional for people who want it to continue by itself.
+ * ONE CLICK, THEN IT PLAYS LIKE A VIDEO
+ *   Nothing starts without a click. After ▶ every step flows into the next on
+ *   its own — there is no Next button. The viewer pauses with ⏸ / Space and
+ *   jumps around with the video-style Timeline (Timeline.js). After the last
+ *   step the player stops on "That's the whole feature!".
  * It receives ready-made WalkthroughStep[] (media resolved to data URLs), so it
  * never touches IndexedDB and works the same for local and shared courses.
  *
@@ -29,7 +29,7 @@
  *
  *   enter ─► overview ─► focus ─► point ─► narrate ─► action ─► exit ─► next step
  *                          │  (look steps skip "point")     │
- *                          │                                └─(Manual mode or last step)─► done
+ *                          │                                └─(last step)─► done
  *                          └─(no region: overview ─► narrate)
  *
  *   Timed phases advance with setTimeout (durations below). "narrate" ends when
@@ -43,7 +43,7 @@
  *   runId        bumped on every (re)start of a step → remounts the stage so CSS
  *                enter animations replay, and restarts the phase effects
  *   playing      false = paused
- *   autoAdvance  "Auto" / "Manual" toggle (default Manual)
+ *   voiceMs      real recording lengths, learned while playing (for the Timeline)
  *   enterOrigin  stage % the NEXT step grows out of (the clicked button's spot)
  *
  * LAYOUT MODES
@@ -59,28 +59,21 @@
  * FULLSCREEN: inline players and embeds get a ⤢ button (Fullscreen API on the
  * player root). In fullscreen the player is tall, so it leaves compact mode.
  *
- * EDITOR PREVIEW EXTRAS: with onEditStep / onInsertAfter, the progress bar shows
- * numbered steps; pick one and use "Edit step N" / "Add step after N" in the top
- * bar to jump straight back into the editor at that point.
+ * ONE CONTINUOUS PIECE: once ▶ is pressed it flows through every step.
+ *   - The previous screen animates OUT (`leaving`) while the next animates IN,
+ *     out of the clicked button after a click step — no gap between steps.
+ *   - Steps on the SAME screenshot keep the same stage (`stageKey`), so the
+ *     camera and pointer glide from one area to the next without any cut.
  *
- * KEYBOARD: ← previous · → next · Space play/pause · Esc exit
+ * HOST CONTROL (editor preview studio): onIndexChange reports the frame,
+ * onPlayingChange reports play/pause, requestedIndex jumps to a frame,
+ * pauseRequest pauses it, hideControls hides the bottom bar.
+ *
+ * KEYBOARD: Space play/pause · ← → jump a step · Esc exit (ignored while typing)
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Play,
-  Pause,
-  ChevronLeft,
-  ChevronRight,
-  RotateCcw,
-  SkipBack,
-  X,
-  CheckCircle2,
-  Pencil,
-  Plus,
-  Maximize2,
-  Minimize2,
-} from 'lucide-react';
+import { Play, Pause, X, CheckCircle2, Maximize2, Minimize2 } from 'lucide-react';
 import { useElementSize } from '@/hooks/useElementSize';
 import { useImageAspectRatios } from '@/hooks/useImageAspectRatios';
 import { hasNarration, useNarration } from '@/hooks/useNarration';
@@ -88,6 +81,8 @@ import { Spinner } from '@/components/ui/Spinner';
 import { WALKTHROUGH_TIMING } from '@/constants';
 import { focusedCenter } from '@/utils/camera';
 import { CaptionContent, TextOnlyStage, WalkthroughStage } from './WalkthroughStage';
+import { Timeline } from './Timeline';
+import { continuesScreen } from '@/services/video/timeline';
 
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
 
@@ -100,14 +95,13 @@ const FLOATING_CAPTION_MIN_WIDTH = 640;
 const DOCKED_CAPTION_SPACE = 150;
 /** Players shorter than this (px) switch to the compact layout (small embeds). */
 const COMPACT_MAX_HEIGHT = 480;
+const SILENT_NARRATION = { mode: 'none', speaking: false, current: 0, duration: 0 };
+/** How long the previous screen stays on stage while the next one enters (ms). */
+const LEAVE_MS = 650;
 
 /** Compact control bar sits on a dark gradient, so its buttons are always light. */
 const COMPACT_ICON_BUTTON_CLASS_DARK =
   'w-8 h-8 rounded-full flex items-center justify-center text-white/90 hover:bg-white/15 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0';
-const COMPACT_ICON_BUTTON_CLASS =
-  'w-8 h-8 rounded-full flex items-center justify-center text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark disabled:opacity-30 disabled:cursor-not-allowed transition-colors';
-const ICON_BUTTON_CLASS =
-  'w-10 h-10 rounded-full flex items-center justify-center text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark disabled:opacity-30 disabled:cursor-not-allowed transition-colors';
 
 /**
  * @param {{
@@ -116,8 +110,12 @@ const ICON_BUTTON_CLASS =
  *   onExit: () => void,
  *   embedded?: boolean,   // inside an iframe: no exit button, Esc does nothing
  *   variant?: 'fullscreen' | 'inline',
- *   onEditStep?: (index: number) => void,     // editor preview only
- *   onInsertAfter?: (index: number) => void,  // editor preview only
+ *   onIndexChange?: (index: number) => void,          // e.g. the preview filmstrip
+ *   requestedIndex?: { index: number, nonce: number } | null, // jump there (new nonce = new request)
+ *   onPlayingChange?: (playing: boolean) => void,       // e.g. open the editor when paused
+ *   onInsertStep?: (position: number) => void,          // edit mode: "+" on the timeline boundaries
+ *   pauseRequest?: number,                              // a new non-zero value pauses (e.g. "Edit" pressed)
+ *   hideControls?: boolean,                             // the host renders its own progress UI
  * }} props
  */
 export function WalkthroughPlayer({
@@ -126,8 +124,12 @@ export function WalkthroughPlayer({
   onExit,
   embedded = false,
   variant = 'fullscreen',
-  onEditStep,
-  onInsertAfter,
+  onIndexChange,
+  onPlayingChange,
+  onInsertStep,
+  requestedIndex = null,
+  pauseRequest = 0,
+  hideControls = false,
 }) {
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState('enter');
@@ -135,8 +137,23 @@ export function WalkthroughPlayer({
   const [playing, setPlaying] = useState(false); // never autoplay
   // False until the viewer presses Play the first time → shows the big ▶ overlay.
   const [hasStarted, setHasStarted] = useState(false);
-  const [autoAdvance, setAutoAdvance] = useState(false); // viewer decides when to continue
+  // Once started, the walkthrough flows through every step as one piece; the
+  // viewer can pause at any time. (Nothing ever starts before the first ▶.)
+  const autoAdvance = true;
   const [enterOrigin, setEnterOrigin] = useState(null);
+  // Stage identity: bumps only when the SCREENSHOT changes. Consecutive steps on
+  // the same screenshot keep the same stage, so the camera glides between areas.
+  const [stageKey, setStageKey] = useState(0);
+  const [continued, setContinued] = useState(false); // current step reuses the previous screenshot
+  // The previous screen, kept on stage for LEAVE_MS while the next one enters,
+  // so there's never a gap between steps.
+  const [leaving, setLeaving] = useState(null);
+  // Recording lengths by step id, learned as they play (makes the Timeline exact).
+  const [voiceMs, setVoiceMs] = useState({});
+  // After a timeline seek: where inside the step / phase playback continues.
+  const [startOffset, setStartOffset] = useState(0); // ms into the step (playhead)
+  const phaseSkipRef = useRef(0); // ms of the current timed phase already "watched"
+  const narrationOffsetRef = useRef(0); // ms into the voice to start from
 
   const narration = useNarration();
   const { start: startNarration, stop: stopNarration, pause: pauseNarration } = narration;
@@ -157,27 +174,64 @@ export function WalkthroughPlayer({
 
   // ── Navigation ─────────────────────────────────────────────────────────────
 
-  /** (Re)starts step `i` from its enter phase. `origin` = where it grows from. */
+  /**
+   * Shows step `i`.
+   * smooth = true (Next, auto-advance): the previous screen animates OUT while
+   *   the next animates IN — out of the clicked button after a click step. If
+   *   both steps use the same screenshot, nothing is swapped: the camera and
+   *   pointer glide straight from the old area to the new one.
+   * smooth = false (Prev, jumping via the progress bar): quick fade-in.
+   */
   const goTo = useCallback(
-    (i, origin = null) => {
+    (i, { smooth = false } = {}) => {
       stopNarration();
+      setStartOffset(0);
+      phaseSkipRef.current = 0;
+      narrationOffsetRef.current = 0;
+      const from = steps[index];
+      const to = steps[i];
+      if (!to) return;
+      const fromClick = !!from?.imageData && !!from.region && from.action !== 'look';
+
+      if (smooth && i !== index && from?.imageData && from.imageData === to.imageData) {
+        setContinued(true);
+        setLeaving(null);
+        setEnterOrigin(null);
+        setIndex(i);
+        setPhase(to.region ? 'focus' : 'narrate');
+        setRunId((r) => r + 1);
+        return;
+      }
+
+      setContinued(false);
+      setLeaving(
+        smooth && from && i !== index
+          ? { step: from, number: index + 1, key: stageKey, kind: fromClick ? 'click' : 'look' }
+          : null,
+      );
+      setEnterOrigin(smooth && fromClick ? focusedCenter(from.region) : null);
+      setStageKey((k) => k + 1);
       setIndex(i);
       setPhase('enter');
-      setEnterOrigin(origin);
       setRunId((r) => r + 1);
     },
-    [stopNarration],
+    [stopNarration, steps, index, stageKey],
   );
 
-  /** Next step; after a click step the next screen opens out of the clicked spot. */
   const goNext = useCallback(() => {
-    if (isLast) return;
-    goTo(index + 1, isClick ? focusedCenter(region) : null);
-  }, [goTo, index, isLast, isClick, region]);
+    if (!isLast) goTo(index + 1, { smooth: true });
+  }, [goTo, index, isLast]);
 
   const goPrev = useCallback(() => {
     if (index > 0) goTo(index - 1);
   }, [goTo, index]);
+
+  // The leaving screen is removed once its exit animation has finished.
+  useEffect(() => {
+    if (!leaving) return;
+    const timer = setTimeout(() => setLeaving(null), LEAVE_MS);
+    return () => clearTimeout(timer);
+  }, [leaving]);
 
   /** First click on ▶ (overlay or control bar). */
   const startPlayback = () => {
@@ -185,9 +239,33 @@ export function WalkthroughPlayer({
     setPlaying(true);
   };
 
-  const replayStep = () => {
-    goTo(index);
-    startPlayback();
+  /**
+   * Timeline click: continue from that exact moment — even inside the step
+   * that is playing. Keeps playing (or stays paused). The stage is remounted in
+   * the target phase, so the camera shows exactly that moment.
+   * @param {import('./Timeline').Moment} moment
+   */
+  const seekTo = (moment) => {
+    const to = steps[moment.index];
+    if (!to) return;
+    stopNarration();
+    const prev = steps[moment.index - 1];
+    const prevClick = !!prev?.imageData && !!prev.region && prev.action !== 'look';
+    const early = moment.phase === 'enter' || moment.phase === 'overview';
+    setLeaving(null);
+    setContinued(continuesScreen(steps, moment.index));
+    setEnterOrigin(
+      early && prevClick && !continuesScreen(steps, moment.index)
+        ? focusedCenter(prev.region)
+        : null,
+    );
+    setStageKey((k) => k + 1);
+    setIndex(moment.index);
+    setPhase(moment.phase);
+    phaseSkipRef.current = moment.phaseOffset;
+    narrationOffsetRef.current = moment.phase === 'narrate' ? moment.phaseOffset : 0;
+    setStartOffset(moment.stepOffset);
+    setRunId((r) => r + 1);
   };
 
   const restart = () => {
@@ -201,7 +279,6 @@ export function WalkthroughPlayer({
       return;
     }
     if (phase === 'done') {
-      // Finished waiting: Play means "continue".
       if (isLast) restart();
       else {
         goNext();
@@ -211,6 +288,32 @@ export function WalkthroughPlayer({
     }
     setPlaying((p) => !p);
   };
+
+  // Host requests (e.g. the preview filmstrip): jump to a frame. A request can
+  // arrive before the frame exists (a step was just inserted and the steps are
+  // still being rebuilt), so it stays pending until that frame is there.
+  const handledJumpRef = useRef(null);
+  useEffect(() => {
+    if (!requestedIndex || handledJumpRef.current === requestedIndex.nonce) return;
+    if (!steps[requestedIndex.index]) return; // not built yet — retry when steps change
+    handledJumpRef.current = requestedIndex.nonce;
+    if (requestedIndex.index !== index) goTo(requestedIndex.index);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedIndex?.nonce, steps]);
+
+  // Tell the host which frame is showing.
+  useEffect(() => {
+    onIndexChange?.(index);
+  }, [index, onIndexChange]);
+
+  useEffect(() => {
+    onPlayingChange?.(playing);
+  }, [playing, onPlayingChange]);
+
+  // Host can pause the player (e.g. the studio's Edit button).
+  useEffect(() => {
+    if (pauseRequest) setPlaying(false);
+  }, [pauseRequest]);
 
   // ── Phase machine ──────────────────────────────────────────────────────────
 
@@ -224,7 +327,8 @@ export function WalkthroughPlayer({
         setPhase(region ? 'focus' : 'narrate');
         break;
       case 'focus':
-        setPhase(isClick ? 'point' : 'narrate');
+        // On a continued screenshot the pointer already travelled with the camera.
+        setPhase(isClick && !continued ? 'point' : 'narrate');
         break;
       case 'point':
         setPhase('narrate');
@@ -233,18 +337,14 @@ export function WalkthroughPlayer({
         setPhase('action');
         break;
       case 'action':
-        setPhase(autoAdvance && !isLast ? 'exit' : 'done');
-        break;
-      case 'exit':
-        goNext();
-        break;
       case 'done':
-        if (autoAdvance && !isLast) setPhase('exit');
+        if (autoAdvance && !isLast) goNext();
+        else setPhase('done');
         break;
       default:
         break;
     }
-  }, [phase, region, isClick, autoAdvance, isLast, goNext]);
+  }, [phase, region, isClick, continued, autoAdvance, isLast, goNext]);
 
   /** How long the current phase lasts, or null if something else ends it. */
   const phaseDuration = (() => {
@@ -252,7 +352,8 @@ export function WalkthroughPlayer({
       case 'enter':
         return DURATION.enter;
       case 'overview':
-        return index === 0 || !enterOrigin ? DURATION.overviewFirst : DURATION.overview;
+        // The very first screen gets a moment; later screens flow straight on.
+        return index === 0 && !enterOrigin ? DURATION.overviewFirst : DURATION.overview;
       case 'focus':
         return DURATION.focus;
       case 'point':
@@ -261,8 +362,6 @@ export function WalkthroughPlayer({
         return stepHasNarration ? null : DURATION.silentNarrate; // voice ends it
       case 'action':
         return isClick ? DURATION.clickAction : DURATION.lookAction;
-      case 'exit':
-        return isClick ? DURATION.exitClick : DURATION.exitLook;
       case 'done':
         return autoAdvance && !isLast ? DURATION.doneAutoResume : null; // user ends it
       default:
@@ -274,7 +373,10 @@ export function WalkthroughPlayer({
   // pending timer, so pausing or navigating can never fire a stale transition.
   useEffect(() => {
     if (!playing || !ready || phaseDuration == null) return;
-    const timer = setTimeout(advancePhase, phaseDuration);
+    // After a seek the first timed phase is already partly watched.
+    const skip = phaseSkipRef.current;
+    phaseSkipRef.current = 0;
+    const timer = setTimeout(advancePhase, Math.max(0, phaseDuration - skip));
     return () => clearTimeout(timer);
   }, [playing, ready, phaseDuration, advancePhase, runId]);
 
@@ -283,7 +385,10 @@ export function WalkthroughPlayer({
   // a paused recording continues where it stopped instead of restarting.
   useEffect(() => {
     if (phase !== 'narrate' || !stepHasNarration) return;
+    const offsetMs = narrationOffsetRef.current;
+    narrationOffsetRef.current = 0;
     startNarration(step, {
+      offsetMs,
       onEnd: () => setPhase('action'),
       onBlocked: () => setPlaying(false), // browser blocked autoplay → wait for Play
     });
@@ -298,6 +403,14 @@ export function WalkthroughPlayer({
     else pauseNarration();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playing]);
+
+  // Remember a recording's real length once it is known.
+  const knownDuration = narration.mode === 'recorded' ? narration.progress.duration : 0;
+  useEffect(() => {
+    if (!knownDuration || !step) return;
+    const ms = Math.round(knownDuration * 1000);
+    setVoiceMs((prev) => (prev[step.id] === ms ? prev : { ...prev, [step.id]: ms }));
+  }, [knownDuration, step]);
 
   // ── Fullscreen ─────────────────────────────────────────────────────────────
   const canFullscreen =
@@ -333,9 +446,17 @@ export function WalkthroughPlayer({
   useEffect(() => {
     const handleKeyDown = (e) => {
       const handlers = keyHandlersRef.current;
+      // Never steal keys while someone is typing (e.g. the studio edit panel).
+      const target = e.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+      ) {
+        return;
+      }
       if (e.key === 'ArrowRight') handlers.goNext();
       if (e.key === 'ArrowLeft') handlers.goPrev();
-      if (e.key === 'Escape' && !handlers.embedded) handlers.onExit();
+      if (e.key === 'Escape' && !handlers.embedded) handlers.onExit?.();
       if (e.key === ' ') {
         e.preventDefault(); // don't scroll the page
         handlers.togglePlay();
@@ -372,7 +493,6 @@ export function WalkthroughPlayer({
 
   const compact = rootSize.height > 0 && rootSize.height < COMPACT_MAX_HEIGHT;
   const canExit = !embedded && !isInline && !!onExit;
-  const canEdit = !!onEditStep && !compact;
 
   // Fit a box with the screenshot's exact ratio into the available area.
   const floatingCaption = !compact && stageArea.width >= FLOATING_CAPTION_MIN_WIDTH;
@@ -392,8 +512,42 @@ export function WalkthroughPlayer({
   const showDockedCaption = hasImage && reserveDocked && captionPhase;
   const showCompactCaption = hasImage && compact && captionPhase;
   const isFinished = phase === 'done' && isLast;
-  const waitingForNext = phase === 'done' && !isLast;
-  const iconButton = compact ? COMPACT_ICON_BUTTON_CLASS : ICON_BUTTON_CLASS;
+  const timelineProps = {
+    steps,
+    index,
+    runKey: runId,
+    startOffset,
+    playing: playing && hasStarted && ready && !isFinished,
+    finished: isFinished,
+    voiceMs,
+    onSeek: seekTo,
+    onInsert: onInsertStep,
+  };
+
+  // The previous screen, animating out underneath the entering one.
+  let leavingNode = null;
+  if (leaving?.step.imageData && stageArea.width > 0) {
+    const leavingRatio = ratios[leaving.step.id] ?? 16 / 10;
+    const leavingWidth = Math.max(0, Math.min(stageArea.width, usableHeight * leavingRatio));
+    leavingNode = (
+      <div
+        key={`leave-${leaving.key}`}
+        className="absolute inset-0 flex items-center justify-center pointer-events-none"
+        aria-hidden="true"
+      >
+        <WalkthroughStage
+          step={leaving.step}
+          stepNumber={leaving.number}
+          phase="exit"
+          width={leavingWidth}
+          height={leavingWidth / leavingRatio}
+          enterOrigin={null}
+          narration={SILENT_NARRATION}
+          floatingCaption={false}
+        />
+      </div>
+    );
+  }
   const FullscreenIcon = isFullscreen ? Minimize2 : Maximize2;
 
   // ── Compact layout (small embeds), YouTube-style ──────────────────────────
@@ -420,11 +574,13 @@ export function WalkthroughPlayer({
           // Uses the full frame; the control bar floats over the picture.
           className="absolute inset-0 flex items-center justify-center p-1.5"
         >
+          {leavingNode}
           {!ready || stageArea.width === 0 ? (
             <Spinner />
           ) : hasImage ? (
             <WalkthroughStage
-              key={`${index}-${runId}`}
+              key={`stage-${stageKey}`}
+              continued={continued}
               step={step}
               stepNumber={index + 1}
               phase={phase}
@@ -436,7 +592,7 @@ export function WalkthroughPlayer({
             />
           ) : (
             <TextOnlyStage
-              key={`${index}-${runId}`}
+              key={`stage-${stageKey}`}
               step={step}
               stepNumber={index + 1}
               narration={narrationInfo}
@@ -511,50 +667,7 @@ export function WalkthroughPlayer({
               <Play className="w-4 h-4 ml-0.5" fill="currentColor" />
             )}
           </button>
-          <button
-            onClick={goPrev}
-            disabled={index === 0}
-            className={COMPACT_ICON_BUTTON_CLASS_DARK}
-            aria-label="Previous step"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <button
-            onClick={goNext}
-            disabled={isLast}
-            className={`${COMPACT_ICON_BUTTON_CLASS_DARK} ${waitingForNext ? 'hs-attention text-accent-ink-dark' : ''}`}
-            aria-label="Next step"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-          {/* Segmented progress: one segment per step, click to jump */}
-          <div className="flex-1 flex items-center gap-1 px-2 min-w-0">
-            {steps.map((s, i) => (
-              <button
-                key={s.id}
-                onClick={() => goTo(i)}
-                className="flex-1 h-4 flex items-center group"
-                aria-label={`Go to step ${i + 1}`}
-                title={`Step ${i + 1}${s.label ? `: ${s.label}` : ''}`}
-              >
-                <span
-                  className={`w-full h-1 rounded-full transition-colors group-hover:h-1.5 ${
-                    i < index ? 'bg-accent/70' : i === index ? 'bg-accent' : 'bg-white/25'
-                  }`}
-                />
-              </button>
-            ))}
-          </div>
-          <span className="text-[11px] font-mono text-white/70 px-1">
-            {index + 1}/{steps.length}
-          </span>
-          <button
-            onClick={replayStep}
-            className={COMPACT_ICON_BUTTON_CLASS_DARK}
-            aria-label="Replay this step"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-          </button>
+          <Timeline {...timelineProps} dark className="flex-1 px-2" />
           {canFullscreen && (
             <button
               onClick={toggleFullscreen}
@@ -590,40 +703,6 @@ export function WalkthroughPlayer({
             </h2>
           </div>
           <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-            {canEdit && (
-              <>
-                <button
-                  onClick={() => onEditStep(index)}
-                  className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line dark:border-line-dark text-xs font-semibold text-ink dark:text-ink-soft-dark hover:border-accent hover:text-accent transition-colors"
-                  title="Close the preview and edit this step"
-                >
-                  <Pencil className="w-3.5 h-3.5" /> Edit step {index + 1}
-                </button>
-                {onInsertAfter && (
-                  <button
-                    onClick={() => onInsertAfter(index)}
-                    className="flex items-center gap-1.5 px-3 h-8 rounded-lg bg-accent/10 text-accent text-xs font-semibold hover:bg-accent/15 transition-colors"
-                    title="Close the preview and add a new step right after this one"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> Add step after {index + 1}
-                  </button>
-                )}
-              </>
-            )}
-            <button
-              onClick={() => setAutoAdvance(!autoAdvance)}
-              className={`text-xs font-medium px-2.5 py-1 rounded-full transition-colors ${
-                autoAdvance
-                  ? 'bg-teal text-white'
-                  : 'bg-paper-2 dark:bg-paper-2-dark text-ink-soft dark:text-ink-soft-dark'
-              }`}
-              title="Auto: go to the next step by itself. Manual: wait for Next."
-            >
-              {autoAdvance ? 'Auto' : 'Manual'}
-            </button>
-            <span className="hidden sm:inline text-xs text-ink-faint dark:text-ink-faint-dark font-mono">
-              {index + 1} / {steps.length}
-            </span>
             {canFullscreen && (
               <button
                 onClick={toggleFullscreen}
@@ -648,11 +727,13 @@ export function WalkthroughPlayer({
           ref={stageAreaRef}
           className="relative w-full flex-1 min-h-0 flex items-center justify-center"
         >
+          {leavingNode}
           {!ready || stageArea.width === 0 ? (
             <Spinner />
           ) : hasImage ? (
             <WalkthroughStage
-              key={`${index}-${runId}`}
+              key={`stage-${stageKey}`}
+              continued={continued}
               step={step}
               stepNumber={index + 1}
               phase={phase}
@@ -664,7 +745,7 @@ export function WalkthroughPlayer({
             />
           ) : (
             <TextOnlyStage
-              key={`${index}-${runId}`}
+              key={`stage-${stageKey}`}
               step={step}
               stepNumber={index + 1}
               narration={narrationInfo}
@@ -741,93 +822,20 @@ export function WalkthroughPlayer({
       </div>
 
       {/* ── Bottom controls ── */}
-      <div className={`flex-shrink-0 ${compact ? 'px-2 pb-2' : 'px-4 sm:px-6 pb-6 pt-2'}`}>
-        <div
-          className={
-            compact
-              ? 'flex items-center justify-between gap-2'
-              : 'max-w-4xl mx-auto flex flex-col items-center gap-4'
-          }
-        >
-          {/* Progress: numbered steps in the editor preview, dots elsewhere */}
-          <div className="flex items-center justify-center gap-2">
-            {steps.map((s, i) =>
-              canEdit ? (
-                <button
-                  key={s.id}
-                  onClick={() => goTo(i)}
-                  className={`h-7 min-w-7 px-2 rounded-full text-xs font-semibold transition-all ${
-                    i === index
-                      ? 'bg-accent text-white shadow-glow'
-                      : 'bg-paper-2 dark:bg-paper-2-dark text-ink-soft dark:text-ink-faint-dark hover:text-accent'
-                  }`}
-                  title={`Step ${i + 1}${s.label ? `: ${s.label}` : ''}`}
-                  aria-label={`Go to step ${i + 1}`}
-                >
-                  {i + 1}
-                </button>
-              ) : (
-                <button
-                  key={s.id}
-                  onClick={() => goTo(i)}
-                  className={`h-2 rounded-full transition-all duration-500 ${
-                    i === index
-                      ? 'w-8 bg-accent'
-                      : i < index
-                        ? 'w-2 bg-accent/50'
-                        : 'w-2 bg-line dark:bg-line-dark hover:bg-ink-faint'
-                  }`}
-                  aria-label={`Go to step ${i + 1}`}
-                />
-              ),
+      <div className={`flex-shrink-0 px-4 sm:px-6 pb-5 pt-1 ${hideControls ? 'hidden' : ''}`}>
+        <div className="max-w-4xl mx-auto flex items-center gap-3 sm:gap-4">
+          <button
+            onClick={togglePlay}
+            className="w-11 h-11 flex-shrink-0 rounded-full bg-accent text-white flex items-center justify-center hover:bg-accent-dark transition-colors shadow-lg"
+            aria-label={playing && phase !== 'done' ? 'Pause' : 'Play'}
+          >
+            {playing && phase !== 'done' ? (
+              <Pause className="w-5 h-5" />
+            ) : (
+              <Play className="w-5 h-5 ml-0.5" />
             )}
-          </div>
-
-          <div className="flex items-center justify-center gap-1 sm:gap-3">
-            {!compact && (
-              <button onClick={restart} className={iconButton} aria-label="Start over">
-                <SkipBack className="w-5 h-5" />
-              </button>
-            )}
-            <button
-              onClick={goPrev}
-              disabled={index === 0}
-              className={iconButton}
-              aria-label="Previous step"
-            >
-              <ChevronLeft className="w-5 h-5" />
-            </button>
-            <button
-              onClick={togglePlay}
-              className={`rounded-full bg-accent text-white flex items-center justify-center hover:bg-accent-dark transition-colors shadow-lg ${
-                compact ? 'w-9 h-9' : 'w-14 h-14'
-              }`}
-              aria-label={playing && phase !== 'done' ? 'Pause' : 'Play'}
-            >
-              {playing && phase !== 'done' ? (
-                <Pause className={compact ? 'w-4 h-4' : 'w-6 h-6'} />
-              ) : (
-                <Play className={compact ? 'w-4 h-4 ml-0.5' : 'w-6 h-6 ml-1'} />
-              )}
-            </button>
-            <button
-              onClick={goNext}
-              disabled={isLast}
-              className={`${iconButton} ${waitingForNext ? 'hs-attention text-accent' : ''}`}
-              aria-label="Next step"
-            >
-              <ChevronRight className="w-5 h-5" />
-            </button>
-            <button onClick={replayStep} className={iconButton} aria-label="Replay this step">
-              <RotateCcw className={compact ? 'w-4 h-4' : 'w-5 h-5'} />
-            </button>
-          </div>
-
-          {compact && (
-            <span className="text-[11px] text-ink-faint dark:text-ink-faint-dark font-mono">
-              {index + 1}/{steps.length}
-            </span>
-          )}
+          </button>
+          <Timeline {...timelineProps} className="flex-1" />
         </div>
       </div>
     </div>

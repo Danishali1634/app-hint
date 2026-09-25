@@ -49,6 +49,12 @@ const lerpView = (a, b, t) => ({
 
 /** Portion of a phase an animation occupies, e.g. the 1000ms zoom inside 1100ms "focus". */
 const within = (elapsed, durationMs) => clamp01(elapsed / durationMs);
+const lerpRegion = (a, b, t) => ({
+  x: lerp(a.x, b.x, t),
+  y: lerp(a.y, b.y, t),
+  w: lerp(a.w, b.w, t),
+  h: lerp(a.h, b.h, t),
+});
 
 // ─── Drawing helpers ─────────────────────────────────────────────────────────
 
@@ -218,6 +224,11 @@ function drawCaption(ctx, { x, y, width, stepNumber, label, text, alpha }) {
 
 /**
  * Draws the frame for one moment of the timeline.
+ *
+ * ONE PIECE: when a new screen enters, the previous screen is drawn underneath
+ * in its "exit" phase (fading / diving into the clicked button) — the two
+ * overlap, so the video never flashes an empty frame between steps. Steps on the
+ * same screen glide the camera from the old area to the new one.
  * @param {CanvasRenderingContext2D} ctx
  * @param {{
  *   width: number, height: number,
@@ -228,14 +239,14 @@ function drawCaption(ctx, { x, y, width, stepNumber, label, text, alpha }) {
  *   progress: number,     // 0–1 within the segment
  *   elapsed: number,      // ms within the segment
  *   time: number,         // ms since the start of the video (for pulses)
+ *   total: number,        // ms, length of the whole video (progress bar)
  * }} frame
  */
 export function renderFrame(ctx, frame) {
-  const { width, height, title, steps, images, segment, elapsed, time } = frame;
-  const step = steps[segment.stepIndex];
-  const phase = segment.phase;
+  const { width, height, title, steps, images, segment, elapsed, time, total } = frame;
+  const i = segment.stepIndex;
 
-  // Background + header
+  // Background + title + one continuous progress bar (no "Step x / y": it is one video).
   ctx.fillStyle = COLORS.background;
   ctx.fillRect(0, 0, width, height);
   ctx.font = `600 18px ${FONT}`;
@@ -243,15 +254,134 @@ export function renderFrame(ctx, frame) {
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillText(title, 40, 34);
-  ctx.textAlign = 'right';
-  ctx.fillStyle = COLORS.textFaint;
-  ctx.font = `500 15px ${FONT}`;
-  ctx.fillText(`Step ${segment.stepIndex + 1} / ${steps.length}`, width - 40, 34);
-  drawProgressDots(ctx, width, height, steps.length, segment.stepIndex);
+  drawProgressBar(ctx, width, height, total ? time / total : 0);
 
+  const layer = (index, phase, layerElapsed, extra = {}) =>
+    drawStep(ctx, {
+      width,
+      height,
+      step: steps[index],
+      prev: steps[index - 1] || null,
+      stepNumber: index + 1,
+      image: images[steps[index].id],
+      phase,
+      elapsed: layerElapsed,
+      time,
+      enterOrigin: null,
+      continued: false,
+      ...extra,
+    });
+
+  // The previous screen leaves underneath the new one.
+  if (segment.phase === 'enter' && i > 0) layer(i - 1, 'exit', elapsed);
+  layer(i, segment.phase, elapsed, {
+    enterOrigin: segment.enterOrigin,
+    continued: !!segment.continued,
+  });
+  // Ending: a warm "you're all set" card over the last frame.
+  if (segment.phase === 'done' && elapsed > OUTRO_DELAY_MS) {
+    drawOutro(ctx, width, height, elapsed - OUTRO_DELAY_MS, title, steps.length);
+  }
+}
+
+/** The ending card starts this long after the last step finished. */
+const OUTRO_DELAY_MS = 900;
+
+/**
+ * Ending card: the screen dims, a check mark draws itself inside a glowing
+ * circle, sparkles drift up, then "You're all set!" + what was learned.
+ */
+function drawOutro(ctx, width, height, t, title, stepCount) {
+  const fade = easeOut(within(t, 600));
+  ctx.save();
+  ctx.fillStyle = `rgba(9, 9, 11, ${0.78 * fade})`;
+  ctx.fillRect(0, 0, width, height);
+
+  const cx = width / 2;
+  const cy = height / 2 - 40;
+
+  // Sparkles rising around the badge
+  for (let n = 0; n < 18; n++) {
+    const angle = (n / 18) * Math.PI * 2;
+    const life = (t / 1600 + n * 0.37) % 1;
+    const radius = 70 + life * 150;
+    const sx = cx + Math.cos(angle) * radius;
+    const sy = cy + Math.sin(angle) * radius * 0.7 - life * 40;
+    ctx.globalAlpha = fade * (1 - life) * 0.9;
+    ctx.fillStyle = n % 3 === 0 ? '#FFFFFF' : n % 3 === 1 ? COLORS.accent : '#2DD4BF';
+    ctx.beginPath();
+    ctx.arc(sx, sy, 2.5 + (n % 3), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Glowing circle that pops in
+  const pop = easeOut(within(t - 150, 500));
+  const r = 54 * (0.6 + 0.4 * pop);
+  ctx.globalAlpha = fade;
+  ctx.shadowColor = 'rgba(99, 91, 255, 0.8)';
+  ctx.shadowBlur = 40;
+  ctx.fillStyle = COLORS.accent;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+
+  // Check mark drawing itself
+  const draw = easeInOut(within(t - 450, 500));
+  if (draw > 0) {
+    const pts = [
+      [cx - 22, cy + 2],
+      [cx - 6, cy + 18],
+      [cx + 24, cy - 16],
+    ];
+    const firstLen = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]);
+    const secondLen = Math.hypot(pts[2][0] - pts[1][0], pts[2][1] - pts[1][1]);
+    let remaining = draw * (firstLen + secondLen);
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 8;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    const a = Math.min(1, remaining / firstLen);
+    ctx.lineTo(lerp(pts[0][0], pts[1][0], a), lerp(pts[0][1], pts[1][1], a));
+    remaining -= firstLen;
+    if (remaining > 0) {
+      const b = Math.min(1, remaining / secondLen);
+      ctx.lineTo(lerp(pts[1][0], pts[2][0], b), lerp(pts[1][1], pts[2][1], b));
+    }
+    ctx.stroke();
+  }
+
+  // Text rises in
+  const textIn = easeOut(within(t - 700, 700));
+  ctx.globalAlpha = fade * textIn;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = `700 40px ${FONT}`;
+  ctx.fillText("You're all set!", cx, cy + 110 + 14 * (1 - textIn));
+  ctx.font = `500 20px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.78)';
+  const learned = wrapText(ctx, `Now you know: ${title}`, width - 240, 2);
+  learned.forEach((line, n) => ctx.fillText(line, cx, cy + 160 + n * 28 + 10 * (1 - textIn)));
+  const tagIn = easeOut(within(t - 1300, 700));
+  ctx.globalAlpha = fade * tagIn;
+  ctx.font = `500 15px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillText(
+    `${stepCount} step${stepCount === 1 ? '' : 's'} · Happy working! 🎉`,
+    cx,
+    cy + 170 + learned.length * 28 + 18,
+  );
+  ctx.restore();
+}
+
+/** One step's screen, camera, spotlight, pointer and caption for one phase. */
+function drawStep(ctx, layer) {
+  const { width, height, step, prev, stepNumber, image, phase, elapsed, time } = layer;
   const showCaption = ['narrate', 'action', 'done'].includes(phase);
   const captionAlpha = phase === 'narrate' ? easeOut(within(elapsed, 450)) : 1;
-  const image = images[step.id];
 
   // Text-only step
   if (!image) {
@@ -261,7 +391,7 @@ export function renderFrame(ctx, frame) {
       x: (width - cardWidth) / 2,
       y: height / 2 - 60,
       width: cardWidth,
-      stepNumber: segment.stepIndex + 1,
+      stepNumber,
       label: step.label,
       text: step.text,
       alpha: enterAlpha * (phase === 'exit' ? 1 - within(elapsed, 450) : 1),
@@ -286,10 +416,18 @@ export function renderFrame(ctx, frame) {
   const clickPoint = region ? focusedCenter(region) : null;
 
   // Camera view + spotlight strength for this phase.
+  const prevView = prev?.region ? computeFocusView(prev.region) : OVERVIEW_VIEW;
   let view = OVERVIEW_VIEW;
   let spotlight = 0;
+  let spotRegion = region;
   if (region) {
-    if (phase === 'focus') {
+    if (phase === 'focus' && layer.continued) {
+      // Same screen as the step before: glide from its area straight to this one.
+      const e = easeInOut(within(elapsed, 1000));
+      view = lerpView(prevView, focusView, e);
+      spotlight = prev?.region ? 1 : within(elapsed, 600);
+      spotRegion = prev?.region ? lerpRegion(prev.region, region, e) : region;
+    } else if (phase === 'focus') {
       const e = easeInOut(within(elapsed, 1000));
       view = lerpView(OVERVIEW_VIEW, focusView, e);
       spotlight = within(elapsed, 600);
@@ -311,7 +449,7 @@ export function renderFrame(ctx, frame) {
   let stageAlpha = 1;
   if (phase === 'enter') {
     const q = clamp01(elapsed / 750);
-    const origin = segment.enterOrigin;
+    const origin = layer.enterOrigin;
     if (origin) {
       const e = 1 - Math.pow(1 - q, 3);
       const scale = lerp(0.06, 1, e);
@@ -340,6 +478,8 @@ export function renderFrame(ctx, frame) {
     ctx.scale(lerp(1, 1.35, e), lerp(1, 1.35, e));
     ctx.translate(-ox, -oy);
     stageAlpha = 1 - e;
+  } else if (phase === 'exit') {
+    stageAlpha = 1 - easeOut(within(elapsed, 600)); // look step: fade while the next screen grows
   }
   ctx.globalAlpha = stageAlpha;
 
@@ -358,7 +498,7 @@ export function renderFrame(ctx, frame) {
   );
 
   if (region && spotlight > 0) {
-    const hole = toPixels(stage, projectRegion(region, view), SPOTLIGHT_PADDING);
+    const hole = toPixels(stage, projectRegion(spotRegion, view), SPOTLIGHT_PADDING);
 
     // Dim everything except the feature (even-odd fill = rectangle with a hole).
     ctx.save();
@@ -398,10 +538,17 @@ export function renderFrame(ctx, frame) {
   ctx.restore(); // clip
 
   // Pointer (click steps).
-  if (isClick && ['point', 'narrate', 'action', 'done', 'exit'].includes(phase)) {
+  const cursorGlides = phase === 'focus' && layer.continued;
+  if (isClick && (cursorGlides || ['point', 'narrate', 'action', 'done', 'exit'].includes(phase))) {
     let pos = clickPoint;
     let alpha = 1;
-    if (phase === 'point') {
+    if (cursorGlides) {
+      // Pointer travels with the camera from the previous button to this one.
+      const from = isClickStep(prev) ? focusedCenter(prev.region) : CURSOR_START;
+      const e = easeInOut(within(elapsed, 1000));
+      pos = { x: lerp(from.x, clickPoint.x, e), y: lerp(from.y, clickPoint.y, e) };
+      alpha = isClickStep(prev) ? 1 : within(elapsed, 300);
+    } else if (phase === 'point') {
       const e = easeOut(within(elapsed, 900));
       pos = { x: lerp(CURSOR_START.x, clickPoint.x, e), y: lerp(CURSOR_START.y, clickPoint.y, e) };
       alpha = within(elapsed, 300);
@@ -443,7 +590,7 @@ export function renderFrame(ctx, frame) {
       x: cx,
       y: cy + lift,
       width: captionWidth,
-      stepNumber: segment.stepIndex + 1,
+      stepNumber,
       label: step.label,
       text: step.text,
       alpha: captionAlpha * stageAlpha,
@@ -452,16 +599,14 @@ export function renderFrame(ctx, frame) {
   ctx.restore(); // stage transform
 }
 
-function drawProgressDots(ctx, width, height, count, current) {
+function drawProgressBar(ctx, width, height, fraction) {
+  const x = 40;
+  const w = width - 80;
   const y = height - 26;
-  const gap = 8;
-  const widths = Array.from({ length: count }, (_, i) => (i === current ? 32 : 8));
-  const total = widths.reduce((a, b) => a + b, 0) + gap * (count - 1);
-  let x = (width - total) / 2;
-  widths.forEach((w, i) => {
-    roundRectPath(ctx, x, y - 4, w, 8, 4);
-    ctx.fillStyle = i === current ? COLORS.accent : i < current ? 'rgba(99,91,255,0.5)' : '#2A2A31';
-    ctx.fill();
-    x += w + gap;
-  });
+  roundRectPath(ctx, x, y - 2, w, 4, 2);
+  ctx.fillStyle = '#2A2A31';
+  ctx.fill();
+  roundRectPath(ctx, x, y - 2, Math.max(4, w * clamp01(fraction)), 4, 2);
+  ctx.fillStyle = COLORS.accent;
+  ctx.fill();
 }

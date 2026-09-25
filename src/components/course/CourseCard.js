@@ -177,6 +177,15 @@ export function CourseCard({
         >
           <Link2 className="w-4 h-4" />
         </button>
+        <button
+          onClick={onCopyEmbed}
+          disabled={busy}
+          className={QUICK_ACTION_CLASS}
+          title="Copy embed code"
+          aria-label="Copy embed code"
+        >
+          <Code2 className="w-4 h-4" />
+        </button>
 
         <div className="ml-auto flex items-center gap-1">
           <button
@@ -198,6 +207,9 @@ export function CourseCard({
                 {/* Invisible full-screen layer: clicking outside closes the menu */}
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="hs-caption-in absolute right-0 bottom-11 z-20 w-48 rounded-2xl border border-line dark:border-line-dark bg-panel dark:bg-panel-dark shadow-2xl p-1.5">
+                  <button onClick={runMenu(onShare)} className={MENU_ITEM_CLASS}>
+                    <Link2 className="w-4 h-4" /> Copy link
+                  </button>
                   <button onClick={runMenu(onCopyEmbed)} className={MENU_ITEM_CLASS}>
                     <Code2 className="w-4 h-4" /> Copy embed code
                   </button>

@@ -106,7 +106,7 @@
 
 /* Step enters: grows out of the previously clicked button ("click → this opens"). */
 .hs-stage-emerge {
-  animation: hs-stage-emerge 750ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: hs-stage-emerge 650ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 @keyframes hs-stage-emerge {
   from {
@@ -126,7 +126,7 @@
 
 /* Step enters without a click origin (first step, Prev, "look" steps). */
 .hs-stage-fade-in {
-  animation: hs-stage-fade-in 650ms ease-out both;
+  animation: hs-stage-fade-in 600ms ease-out both;
 }
 @keyframes hs-stage-fade-in {
   from {
@@ -151,12 +151,45 @@
 }
 
 .hs-stage-exit-fade {
-  animation: hs-stage-exit-fade 450ms ease-in forwards;
+  animation: hs-stage-exit-fade 600ms ease-in forwards;
 }
 @keyframes hs-stage-exit-fade {
   to {
     transform: scale(0.98);
     opacity: 0;
+  }
+}
+
+/* Preview studio edit panel slides in from the right. */
+.hs-panel-in {
+  animation: hs-panel-in 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+@keyframes hs-saved-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.hs-saved-pop {
+  animation: hs-saved-pop 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes hs-panel-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
   }
 }
 
@@ -184,8 +217,8 @@
 /* Animated mouse pointer. */
 .hs-cursor {
   transition:
-    left 900ms cubic-bezier(0.22, 1, 0.36, 1),
-    top 900ms cubic-bezier(0.22, 1, 0.36, 1),
+    left 850ms cubic-bezier(0.22, 1, 0.36, 1),
+    top 850ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 300ms ease;
 }
 .hs-cursor-idle {
@@ -561,25 +594,21 @@
   }
 }
 
-/* Testimonials marquee (components/tutorial/Testimonials). The track holds the
-   cards twice, so moving it by -50% loops seamlessly. Hover pauses it. */
-.marquee-track {
-  animation: marquee 48s linear infinite;
+/* Scroll reveal (hooks/useInView): elements start hidden and rise into place
+   once visible. Stagger with an inline transition-delay. */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px) scale(0.98);
+  filter: blur(6px);
+  transition:
+    opacity 700ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 700ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 700ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.marquee-track.marquee-reverse {
-  animation-direction: reverse;
-  animation-duration: 56s;
-}
-.marquee:hover .marquee-track {
-  animation-play-state: paused;
-}
-@keyframes marquee {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-50%);
-  }
+.reveal.is-visible {
+  opacity: 1;
+  transform: none;
+  filter: none;
 }
 
 /* Respect the OS "reduce motion" setting: keep the story, drop the motion. */
@@ -599,6 +628,8 @@
   .hs-cursor-press,
   .hs-ripple,
   .hs-caption-in,
+  .hs-panel-in,
+  .hs-saved-pop,
   .hs-eq-bar,
   .hs-attention {
     animation-duration: 1ms !important;
@@ -609,9 +640,14 @@
   .demo-caption,
   .mini-select-box,
   .mini-select-pointer,
-  .mini-drop-card,
-  .marquee-track {
+  .mini-drop-card {
     animation: none !important;
+  }
+  .reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    filter: none !important;
+    transition: none !important;
   }
 }
 

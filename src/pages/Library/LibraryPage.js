@@ -163,7 +163,7 @@ export function LibraryPage() {
       {courses.length > 0 && (
         <p className="mt-12 flex items-center justify-center gap-1.5 text-xs text-ink-faint dark:text-ink-faint-dark text-center">
           <ShieldCheck className="w-3.5 h-3.5" />
-          Courses are stored only in this browser and removed automatically after{' '}
+          Courses will removed automatically after{' '}
           {COURSE_RETENTION_DAYS} days without changes. Download the video to keep one forever.
         </p>
       )}

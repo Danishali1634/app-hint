@@ -73,6 +73,12 @@ export const INDEX_UPDATED_AT = 'by_updatedAt';
 
 /** LocalStorage key for the light/dark theme preference. */
 export const LS_THEME = 'hint-studio-theme';
+/** LocalStorage key for the text-to-speech voice + speed. */
+// v2: earlier builds saved a voice on every click in Settings; the new key
+// starts everyone back on the default voice until they press Save.
+export const LS_VOICE = 'hint-studio-voice-v2';
+/** LocalStorage key for the user's own Anthropic API key ("Improve with AI"). */
+export const LS_AI_KEY = 'hint-studio-anthropic-key';
 
 // ─── Walkthrough timing (ms) ─────────────────────────────────────────────────
 // Shared by the live player (WalkthroughPlayer) and the video export
@@ -80,15 +86,15 @@ export const LS_THEME = 'hint-studio-theme';
 // The CSS animations in index.css (.hs-*) are built for these durations.
 
 export const WALKTHROUGH_TIMING = {
-  enter: 750, // .hs-stage-emerge / .hs-stage-fade-in
-  overviewFirst: 1400, // first step: give time to recognise the page
-  overview: 800, // after a click: the screen just opened, show it briefly
-  focus: 1100, // .hs-camera zoom (1000ms) + a beat
-  point: 1000, // .hs-cursor glide (900ms) + a beat
-  silentNarrate: 2400, // step with no voice/text: time to look
-  clickAction: 1000, // press + ripple
-  lookAction: 700, // hold on the highlight
-  exitClick: 500, // .hs-stage-exit-click
-  exitLook: 1000, // zoom back out
-  doneAutoResume: 300, // Auto switched on while waiting
+  enter: 650, // .hs-stage-emerge / .hs-stage-fade-in
+  overviewFirst: 1200, // first step: give time to recognise the page
+  overview: 450, // later steps: the screen just opened — move on quickly
+  focus: 1050, // .hs-camera zoom/glide (1000ms)
+  point: 850, // .hs-cursor glide (850ms)
+  silentNarrate: 2200, // step with no voice/text: time to look
+  clickAction: 750, // press + ripple, then the next screen starts opening
+  lookAction: 450, // brief hold on the highlight
+  exitClick: 500, // .hs-stage-exit-click (overlaps the next step's enter)
+  exitLook: 600, // .hs-stage-exit-fade (overlaps the next step's enter)
+  doneAutoResume: 300,
 };

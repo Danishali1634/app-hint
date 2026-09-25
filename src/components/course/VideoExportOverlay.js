@@ -7,11 +7,21 @@
 import { Film, X } from 'lucide-react';
 
 /**
- * @param {{ title: string, progress: number, onCancel: () => void }} props
+ * @param {{ title: string, stage?: 'prepare' | 'voice' | 'record', progress: number, onCancel: () => void }} props
  *   progress 0–1
  */
-export function VideoExportOverlay({ title, progress, onCancel }) {
+export function VideoExportOverlay({ title, stage = 'record', progress, onCancel }) {
   const percent = Math.round(progress * 100);
+  const heading =
+    stage === 'voice'
+      ? 'Preparing the voice…'
+      : stage === 'prepare'
+        ? 'Getting ready…'
+        : 'Creating your video…';
+  const hint =
+    stage === 'voice'
+      ? 'The first video downloads the AI voice once'
+      : 'Keep this tab open while it records';
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -22,9 +32,7 @@ export function VideoExportOverlay({ title, progress, onCancel }) {
             <Film className="w-6 h-6" />
           </div>
           <div className="min-w-0 flex-1">
-            <h2 className="text-base font-semibold text-ink dark:text-ink-soft-dark">
-              Creating your video…
-            </h2>
+            <h2 className="text-base font-semibold text-ink dark:text-ink-soft-dark">{heading}</h2>
             <p className="text-sm text-ink-soft dark:text-ink-soft-dark truncate">{title}</p>
           </div>
           <button
@@ -43,7 +51,7 @@ export function VideoExportOverlay({ title, progress, onCancel }) {
           />
         </div>
         <div className="mt-2 flex justify-between text-xs text-ink-faint dark:text-ink-faint-dark">
-          <span>Keep this tab open while it records</span>
+          <span>{hint}</span>
           <span className="font-mono">{percent}%</span>
         </div>
       </div>
