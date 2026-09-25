@@ -1,0 +1,608 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* Keep scrolled-to / focused elements clear of the editor's sticky
+       bottom "Mark done" bar. */
+    scroll-padding-bottom: 96px;
+  }
+  body {
+    @apply bg-paper text-ink dark:bg-paper-dark dark:text-ink-soft-dark antialiased;
+    /* Inter's single-storey "a" + open digits read cleaner in UI text. */
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    font-variation-settings: normal;
+    /* A soft accent glow at the top of every page — premium, not loud. */
+    background-image:
+      radial-gradient(1200px 520px at 50% -120px, rgba(99, 91, 255, 0.1), transparent 70%),
+      radial-gradient(700px 360px at 90% -80px, rgba(124, 58, 237, 0.06), transparent 70%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+  }
+  html.dark body {
+    background-image:
+      radial-gradient(1200px 560px at 50% -140px, rgba(99, 91, 255, 0.2), transparent 70%),
+      radial-gradient(800px 400px at 90% -100px, rgba(124, 58, 237, 0.12), transparent 70%);
+  }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.02em;
+  }
+  ::selection {
+    background: rgba(99, 91, 255, 0.28);
+  }
+  *:focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-paper dark:ring-offset-paper-dark;
+  }
+}
+
+@layer utilities {
+  .animate-in {
+    animation: animate-in 0.2s ease-out;
+  }
+  .slide-in-from-bottom-2 {
+    animation: slide-in-from-bottom 0.2s ease-out;
+  }
+}
+
+@keyframes animate-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-in-from-bottom {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes highlight-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 4px rgba(99, 91, 255, 0.3),
+      0 0 24px rgba(99, 91, 255, 0.4);
+  }
+  50% {
+    box-shadow:
+      0 0 0 6px rgba(99, 91, 255, 0.5),
+      0 0 36px rgba(99, 91, 255, 0.6);
+  }
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * Walkthrough animations (components/walkthrough/*)
+ * Timings here must match the phase durations in WalkthroughPlayer.js.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/* The camera layer: zooms/pans the screenshot. */
+.hs-camera {
+  transform-origin: 0 0;
+  transition: transform 1000ms cubic-bezier(0.65, 0, 0.35, 1);
+  will-change: transform;
+}
+
+/* Overlays positioned in stage % (spotlight, ring, cursor target) move with the camera. */
+.hs-follow-camera {
+  transition:
+    left 1000ms cubic-bezier(0.65, 0, 0.35, 1),
+    top 1000ms cubic-bezier(0.65, 0, 0.35, 1),
+    width 1000ms cubic-bezier(0.65, 0, 0.35, 1),
+    height 1000ms cubic-bezier(0.65, 0, 0.35, 1),
+    opacity 600ms ease;
+}
+
+/* Step enters: grows out of the previously clicked button ("click → this opens"). */
+.hs-stage-emerge {
+  animation: hs-stage-emerge 750ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes hs-stage-emerge {
+  from {
+    transform: scale(0.06);
+    opacity: 0;
+    filter: blur(8px);
+  }
+  55% {
+    opacity: 1;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+/* Step enters without a click origin (first step, Prev, "look" steps). */
+.hs-stage-fade-in {
+  animation: hs-stage-fade-in 650ms ease-out both;
+}
+@keyframes hs-stage-fade-in {
+  from {
+    transform: scale(0.97);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* After a click: dive into the button, then the next screen emerges from it. */
+.hs-stage-exit-click {
+  animation: hs-stage-exit-click 500ms cubic-bezier(0.55, 0, 1, 0.45) forwards;
+}
+@keyframes hs-stage-exit-click {
+  to {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+.hs-stage-exit-fade {
+  animation: hs-stage-exit-fade 450ms ease-in forwards;
+}
+@keyframes hs-stage-exit-fade {
+  to {
+    transform: scale(0.98);
+    opacity: 0;
+  }
+}
+
+/* Highlight ring around the feature. */
+.hs-ring-pulse {
+  animation: highlight-pulse 1.6s ease-in-out infinite;
+}
+.hs-ring-flash {
+  animation: hs-ring-flash 450ms ease-out;
+}
+@keyframes hs-ring-flash {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(99, 91, 255, 0.9);
+  }
+  40% {
+    transform: scale(0.96);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 18px rgba(99, 91, 255, 0);
+  }
+}
+
+/* Animated mouse pointer. */
+.hs-cursor {
+  transition:
+    left 900ms cubic-bezier(0.22, 1, 0.36, 1),
+    top 900ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 300ms ease;
+}
+.hs-cursor-idle {
+  animation: hs-cursor-bob 1.4s ease-in-out infinite;
+}
+@keyframes hs-cursor-bob {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(-2px, -4px);
+  }
+}
+.hs-cursor-press {
+  animation: hs-cursor-press 420ms ease-out;
+}
+@keyframes hs-cursor-press {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(0.78);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Click ripple rings at the pointer tip. */
+.hs-ripple {
+  animation: hs-ripple 900ms ease-out forwards;
+}
+@keyframes hs-ripple {
+  from {
+    transform: translate(-50%, -50%) scale(0.1);
+    opacity: 0.85;
+  }
+  to {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0;
+  }
+}
+
+/* Caption bubble. */
+.hs-caption-in {
+  animation: hs-caption-in 450ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes hs-caption-in {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* "Speaking" equalizer bars. */
+.hs-eq-bar {
+  animation: hs-eq 900ms ease-in-out infinite;
+  transform-origin: bottom;
+}
+@keyframes hs-eq {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* Draws attention to a call-to-action (editor "Select area" button, player Next). */
+.hs-attention {
+  animation: hs-attention 1.8s ease-in-out infinite;
+}
+@keyframes hs-attention {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(99, 91, 255, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(99, 91, 255, 0);
+  }
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * Tutorial animations (components/tutorial/*). Pure CSS loops that show what
+ * the app does. 10s cycle for the home demo; percentages below are moments
+ * in that cycle:
+ *   0–12%  pointer moves to the button      12–28%  drags a selection box
+ *   30–48% camera zooms, rest dims           46–52%  click ripple
+ *   54–62% next screen (modal) opens from the button, chart bars grow
+ *   92–100% everything resets
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+.demo-loop {
+  animation-duration: 10s;
+  animation-iteration-count: infinite;
+  animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.demo-camera {
+  transform-origin: 77% 18.5%;
+  animation-name: demo-camera;
+}
+@keyframes demo-camera {
+  0%,
+  30% {
+    transform: scale(1);
+  }
+  42%,
+  50% {
+    transform: scale(2.1);
+  }
+  58%,
+  100% {
+    transform: scale(1);
+  }
+}
+
+.demo-select {
+  animation-name: demo-select;
+}
+@keyframes demo-select {
+  0%,
+  12% {
+    width: 0;
+    height: 0;
+    opacity: 0;
+  }
+  13% {
+    opacity: 1;
+  }
+  28%,
+  52% {
+    width: 24%;
+    height: 11%;
+    opacity: 1;
+  }
+  56%,
+  100% {
+    width: 24%;
+    height: 11%;
+    opacity: 0;
+  }
+}
+
+.demo-spot {
+  animation-name: demo-spot;
+}
+@keyframes demo-spot {
+  0%,
+  30% {
+    opacity: 0;
+  }
+  40%,
+  52% {
+    opacity: 1;
+  }
+  58%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.demo-pointer {
+  animation-name: demo-pointer;
+}
+@keyframes demo-pointer {
+  0% {
+    left: 92%;
+    top: 92%;
+    opacity: 0;
+  }
+  4% {
+    opacity: 1;
+  }
+  12% {
+    left: 65%;
+    top: 13%;
+  }
+  28% {
+    left: 89%;
+    top: 24%;
+  }
+  40%,
+  50% {
+    left: 77%;
+    top: 18.5%;
+  }
+  54% {
+    left: 77%;
+    top: 18.5%;
+    opacity: 1;
+  }
+  58%,
+  100% {
+    left: 77%;
+    top: 18.5%;
+    opacity: 0;
+  }
+}
+
+.demo-press {
+  animation-name: demo-press;
+}
+@keyframes demo-press {
+  0%,
+  46% {
+    transform: scale(1);
+  }
+  48% {
+    transform: scale(0.75);
+  }
+  51%,
+  100% {
+    transform: scale(1);
+  }
+}
+
+.demo-ripple {
+  animation-name: demo-ripple;
+}
+@keyframes demo-ripple {
+  0%,
+  47% {
+    transform: translate(-50%, -50%) scale(0);
+    opacity: 0;
+  }
+  48% {
+    opacity: 0.9;
+  }
+  56%,
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0;
+  }
+}
+
+.demo-modal {
+  transform-origin: 95% 1%;
+  animation-name: demo-modal;
+}
+@keyframes demo-modal {
+  0%,
+  54% {
+    transform: scale(0.04);
+    opacity: 0;
+    filter: blur(6px);
+  }
+  62% {
+    transform: scale(1);
+    opacity: 1;
+    filter: blur(0);
+  }
+  90% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  96%,
+  100% {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+.demo-bar {
+  transform-origin: bottom;
+  animation-name: demo-bar;
+}
+@keyframes demo-bar {
+  0%,
+  60% {
+    transform: scaleY(0);
+  }
+  70%,
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+/* Captions under the demo light up in turn (delay set inline per caption). */
+.demo-caption {
+  animation: demo-caption 10s infinite;
+}
+@keyframes demo-caption {
+  0%,
+  24% {
+    opacity: 1;
+  }
+  25%,
+  100% {
+    opacity: 0.35;
+  }
+}
+
+/* Small in-editor hints: "drag over the feature", "drop a screenshot here". */
+.mini-select-box {
+  animation: mini-select-box 3.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+@keyframes mini-select-box {
+  0%,
+  15% {
+    width: 0;
+    height: 0;
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  60%,
+  85% {
+    width: 46%;
+    height: 30%;
+    opacity: 1;
+  }
+  100% {
+    width: 46%;
+    height: 30%;
+    opacity: 0;
+  }
+}
+.mini-select-pointer {
+  animation: mini-select-pointer 3.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+@keyframes mini-select-pointer {
+  0% {
+    left: 80%;
+    top: 90%;
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  15% {
+    left: 27%;
+    top: 35%;
+  }
+  60%,
+  85% {
+    left: 73%;
+    top: 65%;
+    opacity: 1;
+  }
+  100% {
+    left: 73%;
+    top: 65%;
+    opacity: 0;
+  }
+}
+.mini-drop-card {
+  animation: mini-drop-card 3s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+@keyframes mini-drop-card {
+  0% {
+    transform: translate(38%, -70%) rotate(8deg);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  45%,
+  85% {
+    transform: translate(0, 0) rotate(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(0, 0) rotate(0);
+    opacity: 0;
+  }
+}
+
+/* Respect the OS "reduce motion" setting: keep the story, drop the motion. */
+@media (prefers-reduced-motion: reduce) {
+  .hs-camera,
+  .hs-follow-camera,
+  .hs-cursor {
+    transition-duration: 1ms !important;
+  }
+  .hs-stage-emerge,
+  .hs-stage-fade-in,
+  .hs-stage-exit-click,
+  .hs-stage-exit-fade,
+  .hs-ring-pulse,
+  .hs-ring-flash,
+  .hs-cursor-idle,
+  .hs-cursor-press,
+  .hs-ripple,
+  .hs-caption-in,
+  .hs-eq-bar,
+  .hs-attention {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  /* Tutorial loops: show the final frame instead of moving. */
+  .demo-loop,
+  .demo-caption,
+  .mini-select-box,
+  .mini-select-pointer,
+  .mini-drop-card {
+    animation: none !important;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-line dark:bg-line-dark rounded-full;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-ink-faint dark:bg-ink-faint-dark;
+}
