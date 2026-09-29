@@ -16,6 +16,11 @@ export default defineConfig({
     include: /src\/.*\.js$/,
     exclude: [],
   },
+  // The AI voice runs in a module worker (services/audio/neuralVoice.worker.js),
+  // which loads its speech engine with dynamic imports → needs ES output.
+  worker: {
+    format: 'es',
+  },
   optimizeDeps: {
     exclude: ['lucide-react'],
     esbuildOptions: {

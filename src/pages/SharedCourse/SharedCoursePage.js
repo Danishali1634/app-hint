@@ -1,5 +1,5 @@
 /**
- * @file Route #/s/:slug/:encoded — opens a course from a share link.
+ * @file Route #/s/:encoded (older links: #/s/:slug/:encoded) — opens a course from a share link.
  *
  * Runs WITHOUT IndexedDB: the whole course (text, screenshots, audio) is inside
  * the `encoded` URL segment (see services/sharing/share.js).

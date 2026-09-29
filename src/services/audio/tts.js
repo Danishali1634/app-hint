@@ -4,6 +4,11 @@
  * WHEN IT IS USED: in the player, a step with NO recording but WITH text.
  *   Voice priority per step:  recorded audio  >  TTS of step.text  >  silence
  *
+ * ONE VOICE EVERYWHERE: text is spoken by the AI voice chosen in Settings
+ * (services/audio/neuralVoice) — the same voice and the same audio as the
+ * downloaded video. The browser voices below are only the FALLBACK when the AI
+ * voice can't load (e.g. offline on first use, or after AI_VOICE_WAIT_MS).
+ *
  * SOUNDING HUMAN (not robotic)
  *   Browsers ship very different voices. The "natural" / neural ones sound
  *   close to a person — e.g. Edge's "Microsoft Neerja Online (Natural) –
@@ -20,11 +25,17 @@
  */
 
 import { getVoiceSettings } from '@/services/storage/settings';
+import { aiVoiceUrl, isAiVoiceSupported } from '@/services/audio/neuralVoice';
 
-/** @typedef {'idle' | 'speaking' | 'paused'} TTSState */
+/** @typedef {'idle' | 'loading' | 'speaking' | 'paused'} TTSState */
 
 export function isTTSSupported() {
   return typeof window !== 'undefined' && 'speechSynthesis' in window;
+}
+
+/** True if text can be spoken here at all: the AI voice or the browser's voice. */
+export function canSpeakText() {
+  return isAiVoiceSupported() || isTTSSupported();
 }
 
 /** Higher = more natural / better match for Hinglish narration. */
@@ -114,39 +125,30 @@ export function splitIntoSentences(text) {
 }
 
 /**
- * Creates a small controller around the global speechSynthesis queue.
+ * How long to wait for the AI voice before speaking with the browser voice
+ * instead (ms). Only matters on first use of a voice (its model downloads once)
+ * or on a very slow computer.
+ */
+export const AI_VOICE_WAIT_MS = 20000;
+
+/**
+ * Creates a small speech controller: the AI voice (services/audio/neuralVoice
+ * — the SAME voice and audio as the downloaded video), or the browser's
+ * speechSynthesis when the AI voice can't load.
  * Note: speechSynthesis is global, so speak() cancels anything already speaking.
  */
 export function createHinglishTTS() {
   const supported = isTTSSupported();
   let state = 'idle';
   let session = 0; // bumps on every speak()/cancel() so stale callbacks are ignored
+  let audio = null; // the AI voice playing (or ready to play)
+  let paused = false;
+  let pendingBrowser = null; // browser fallback waiting for resume()
 
-  /**
-   * Speaks text; `onEnd` fires once when everything was read OR on error, so
-   * callers can always rely on it to continue (e.g. to the next step).
-   * @param {string} text
-   * @param {() => void} [onEnd]
-   * @param {{ voiceURI?: string | null, rate?: number }} [override]  preview an unsaved choice
-   */
-  function speak(text, onEnd, override) {
-    const chunks = splitIntoSentences(text);
-    if (!supported || chunks.length === 0) {
-      onEnd?.();
-      return;
-    }
-    window.speechSynthesis.cancel();
-    const mySession = ++session;
+  /** The browser's own voice, sentence by sentence. */
+  function speakWithBrowser(chunks, done, mySession, override) {
     const voice = override ? pickVoice(override.voiceURI ?? null) : pickVoice();
     const rate = override?.rate ?? getVoiceSettings().rate;
-    let finished = false;
-    const done = () => {
-      if (finished || mySession !== session) return;
-      finished = true;
-      state = 'idle';
-      onEnd?.();
-    };
-
     chunks.forEach((chunk, i) => {
       const utterance = new SpeechSynthesisUtterance(chunk);
       if (voice) {
@@ -167,26 +169,132 @@ export function createHinglishTTS() {
     });
   }
 
+  function stopAll() {
+    if (audio) {
+      audio.onended = audio.onerror = audio.onplaying = null;
+      audio.pause();
+      audio = null;
+    }
+    pendingBrowser = null;
+    if (supported) window.speechSynthesis.cancel();
+  }
+
+  /**
+   * Speaks text; `onEnd` fires once when everything was read OR on error, so
+   * callers can always rely on it to continue (e.g. to the next step).
+   * @param {string} text
+   * @param {() => void} [onEnd]
+   * @param {{ voiceURI?: string | null, rate?: number, aiVoiceId?: string }} [override]
+   *   preview an unsaved choice
+   */
+  function speak(text, onEnd, override) {
+    const chunks = splitIntoSentences(text);
+    const ai = isAiVoiceSupported();
+    if ((!supported && !ai) || chunks.length === 0) {
+      onEnd?.();
+      return;
+    }
+    stopAll();
+    const mySession = ++session;
+    paused = false;
+    let finished = false;
+    const done = () => {
+      if (finished || mySession !== session) return;
+      finished = true;
+      state = 'idle';
+      audio = null;
+      onEnd?.();
+    };
+    const fallBackToBrowser = () => {
+      if (finished || mySession !== session) return;
+      audio = null;
+      if (!supported) {
+        done();
+        return;
+      }
+      if (paused) {
+        pendingBrowser = fallBackToBrowser;
+        return;
+      }
+      speakWithBrowser(chunks, done, mySession, override);
+    };
+    if (!ai) {
+      fallBackToBrowser();
+      return;
+    }
+
+    // 1. The AI voice (same audio as the video).
+    state = 'loading';
+    let gaveUp = false;
+    let timer;
+    const giveUp = () => {
+      if (paused) {
+        timer = setTimeout(giveUp, 1000); // don't give up while paused
+        return;
+      }
+      gaveUp = true;
+      fallBackToBrowser();
+    };
+    timer = setTimeout(giveUp, AI_VOICE_WAIT_MS);
+    aiVoiceUrl(text, { voiceId: override?.aiVoiceId, rate: override?.rate })
+      .then((url) => {
+        clearTimeout(timer);
+        if (gaveUp || finished || mySession !== session) return;
+        const el = new Audio(url);
+        audio = el;
+        el.onended = done;
+        el.onerror = () => audio === el && fallBackToBrowser();
+        el.onplaying = () => {
+          if (mySession === session) state = 'speaking';
+        };
+        if (!paused) {
+          el.play().catch((err) => {
+            if (err?.name !== 'AbortError' && audio === el) fallBackToBrowser();
+          });
+        }
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        // 2. Fallback: the browser's voice.
+        if (!gaveUp) fallBackToBrowser();
+      });
+  }
+
   function cancel() {
-    if (!supported) return;
     session += 1;
-    window.speechSynthesis.cancel();
+    paused = false;
+    stopAll();
     state = 'idle';
   }
 
   function pause() {
-    if (!supported) return;
-    window.speechSynthesis.pause();
+    paused = true;
+    audio?.pause();
+    if (supported) window.speechSynthesis.pause();
     state = 'paused';
   }
 
   function resume() {
-    if (!supported) return;
-    window.speechSynthesis.resume();
+    paused = false;
     state = 'speaking';
+    if (pendingBrowser) {
+      const start = pendingBrowser;
+      pendingBrowser = null;
+      start();
+      return;
+    }
+    if (audio) audio.play().catch(() => {});
+    else if (supported) window.speechSynthesis.resume();
   }
 
-  return { speak, cancel, pause, resume, isSupported: supported, getState: () => state };
+  return {
+    speak,
+    cancel,
+    pause,
+    resume,
+    isSupported: supported || isAiVoiceSupported(),
+    getState: () => state,
+  };
 }
 
 /** One-off preview ("Listen" buttons, voice picker). Cancels anything playing. */
@@ -194,7 +302,7 @@ const previewPlayer = createHinglishTTS();
 /**
  * @param {string} text
  * @param {() => void} [onEnd]
- * @param {{ voiceURI?: string | null, rate?: number }} [override]  e.g. an unsaved choice in Settings
+ * @param {{ voiceURI?: string | null, rate?: number, aiVoiceId?: string }} [override]  e.g. an unsaved choice in Settings
  */
 export function previewSpeech(text, onEnd, override) {
   previewPlayer.speak(text, onEnd, override);

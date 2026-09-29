@@ -2,7 +2,7 @@
  * @file Home-page facts and use cases.
  *
  * RELIABLE CONTENT ONLY: every number is a real property of this app, read
- * from the same constants the code enforces (MAX_STEPS, COURSE_RETENTION_DAYS),
+ * from the same constants and types the code enforces (MAX_STEPS, StepAction),
  * so the page can never claim something the product doesn't do. No reviews,
  * no invented customers.
  *
@@ -19,15 +19,15 @@ import { useNavigate } from 'react-router-dom';
 import {
   Layers,
   Share2,
-  ServerOff,
-  CalendarClock,
+  Video,
+  MousePointerClick,
   GraduationCap,
   LifeBuoy,
   Megaphone,
   Compass,
   ArrowRight,
 } from 'lucide-react';
-import { COURSE_RETENTION_DAYS, MAX_STEPS } from '@/constants';
+import { MAX_STEPS } from '@/constants';
 import { useInView } from '@/hooks/useInView';
 
 const STATS = [
@@ -35,7 +35,7 @@ const STATS = [
     Icon: Layers,
     value: MAX_STEPS,
     suffix: '',
-    label: 'steps per course',
+    label: Number.isFinite(MAX_STEPS) ? 'steps per course' : 'steps per course — no limit',
     detail: 'Each step is its own screen with its own highlighted feature.',
   },
   {
@@ -46,18 +46,18 @@ const STATS = [
     detail: 'A link, an embed code for any website, or a downloadable video.',
   },
   {
-    Icon: ServerOff,
-    value: 0,
+    Icon: MousePointerClick,
+    value: 3,
     suffix: '',
-    label: 'sign-ups or servers',
-    detail: 'Everything runs and stays in your browser.',
+    label: 'step types',
+    detail: 'Click, Look and Type: show a click, point something out, or fill in a field.',
   },
   {
-    Icon: CalendarClock,
-    value: COURSE_RETENTION_DAYS,
-    suffix: ' days',
-    label: 'automatic clean-up',
-    detail: 'Unchanged courses are removed; every edit restarts the clock.',
+    Icon: Video,
+    value: 2,
+    suffix: '',
+    label: 'ways to create',
+    detail: 'From screenshots, or from a recording of your screen. Mix both in one course.',
   },
 ];
 
@@ -98,7 +98,11 @@ function useCountUp(target, run, durationMs = 1200) {
   const [value, setValue] = useState(0);
   useEffect(() => {
     if (!run) return;
-    if (target === 0 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (
+      target === 0 ||
+      !Number.isFinite(target) ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
       setValue(target);
       return;
     }
@@ -128,7 +132,7 @@ function StatCard({ stat, index, visible }) {
           <Icon className="w-5 h-5" />
         </span>
         <p className="text-4xl sm:text-5xl font-bold tracking-tight text-ink dark:text-white tabular-nums">
-          {shown}
+          {Number.isFinite(shown) ? shown : '∞'}
           <span className="text-2xl sm:text-3xl text-accent">{suffix}</span>
         </p>
         <p className="mt-1 text-sm font-semibold text-ink dark:text-ink-soft-dark">{label}</p>

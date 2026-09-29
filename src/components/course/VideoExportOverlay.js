@@ -1,7 +1,7 @@
 /**
  * @file Full-screen progress card shown while a walkthrough video is recorded.
- * Recording runs in real time, so the user must keep this tab visible; the
- * card says so. Driven by hooks/useCourseSharing.
+ * The video is usually encoded in seconds (older browsers record it in real
+ * time), so the card asks to keep the tab open. Driven by hooks/useCourseSharing.
  */
 
 import { Film, X } from 'lucide-react';
@@ -21,7 +21,7 @@ export function VideoExportOverlay({ title, stage = 'record', progress, onCancel
   const hint =
     stage === 'voice'
       ? 'The first video downloads the AI voice once'
-      : 'Keep this tab open while it records';
+      : 'Usually ready in a few seconds — keep this tab open';
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">

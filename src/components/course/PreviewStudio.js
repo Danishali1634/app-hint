@@ -84,7 +84,8 @@ export function PreviewStudio({ course, onSave, onClose }) {
     let cancelled = false;
     const timer = setTimeout(
       async () => {
-        const built = await buildWalkthroughSteps(draft);
+        // One frame per step: the edit panel edits frames by step position.
+        const built = await buildWalkthroughSteps(draft, { expandTargets: false });
         if (!cancelled) setWalkSteps(built);
       },
       walkSteps ? REBUILD_DEBOUNCE_MS : 0,

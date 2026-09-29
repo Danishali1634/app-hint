@@ -2,11 +2,14 @@
  * @file Settings: the AI voice (which voice, how fast) and the optional
  * Anthropic API key used by "Improve with AI".
  *
- * VOICE: "Default voice" (selected unless you saved another) = the most natural
- * Indian-English voice this browser has (tts.getDefaultVoice). Below it every
- * voice, most natural first; "Recommended" = natural/neural voices. ▶ plays a
- * sample. Picking a voice or speed is only a DRAFT — nothing changes until
- * "Save voice"; closing or Cancel keeps the saved choice.
+ * VOICE: the AI voices (services/audio/neuralVoice AI_VOICES) — the SAME voice
+ * is used by the walkthrough and the downloaded video. ▶ plays a sample (the
+ * first play of a voice downloads it once). Picking a voice or speed is only
+ * a DRAFT — nothing changes until "Save voice"; closing or Cancel keeps the
+ * saved choice.
+ *   Browsers that can't run the AI voice keep the old list of their own voices:
+ *   "Default voice" = the most natural Indian-English voice this browser has
+ *   (tts.getDefaultVoice), then every voice, most natural first.
  *
  * Rendered in a portal on <body>: the header it opens from has a backdrop
  * blur, which would otherwise trap this "fixed" dialog inside the header.
@@ -30,6 +33,7 @@ import {
   previewSpeech,
   stopPreviewSpeech,
 } from '@/services/audio/tts';
+import { AI_VOICES, isAiVoiceSupported, VIDEO_VOICE_ID } from '@/services/audio/neuralVoice';
 import {
   getAiKey,
   getVoiceSettings,
@@ -63,8 +67,12 @@ export function SettingsDialog({ onClose }) {
   const usingDefault = voiceSettings.voiceURI == null;
   const recommended = voices.filter(isNaturalVoice);
   const others = voices.filter((v) => !isNaturalVoice(v));
+  const aiVoiceSupported = isAiVoiceSupported();
+  const aiVoiceOf = (settings) => settings.aiVoiceId ?? VIDEO_VOICE_ID;
   const voiceDirty =
-    voiceSettings.voiceURI !== savedVoice.voiceURI || voiceSettings.rate !== savedVoice.rate;
+    voiceSettings.voiceURI !== savedVoice.voiceURI ||
+    voiceSettings.rate !== savedVoice.rate ||
+    aiVoiceOf(voiceSettings) !== aiVoiceOf(savedVoice);
 
   /** Changes the DRAFT only. */
   const updateVoice = (patch) => setVoiceState((v) => ({ ...v, ...patch }));
@@ -90,6 +98,69 @@ export function SettingsDialog({ onClose }) {
       voiceURI,
       rate: voiceSettings.rate,
     });
+  };
+
+  /** ▶ an AI voice at the draft speed, without saving (first play downloads it). */
+  const playAi = (aiVoiceId) => {
+    const key = `ai:${aiVoiceId}`;
+    if (playingURI === key) {
+      stopPreviewSpeech();
+      setPlayingURI(null);
+      return;
+    }
+    updateVoice({ aiVoiceId });
+    setPlayingURI(key);
+    previewSpeech(SAMPLE_TEXT, () => setPlayingURI(null), {
+      aiVoiceId,
+      rate: voiceSettings.rate,
+    });
+  };
+
+  const renderAiVoice = (voice) => {
+    const active = aiVoiceOf(voiceSettings) === voice.id;
+    const playing = playingURI === `ai:${voice.id}`;
+    return (
+      <li key={voice.id}>
+        <div
+          className={`flex items-center gap-3 px-3 py-2 rounded-xl border transition-colors ${
+            active
+              ? 'border-accent bg-accent/5 dark:bg-accent/10'
+              : 'border-transparent hover:bg-paper-2 dark:hover:bg-paper-2-dark'
+          }`}
+        >
+          <button
+            onClick={() => updateVoice({ aiVoiceId: voice.id })}
+            className="flex-1 min-w-0 text-left"
+            aria-pressed={active}
+          >
+            <span className="flex items-center gap-2 text-sm font-medium text-ink dark:text-ink-soft-dark">
+              {voice.name}
+              {voice.id === VIDEO_VOICE_ID && (
+                <span className="px-1.5 py-px rounded-full text-[10px] font-bold uppercase tracking-wider bg-accent text-white">
+                  Default
+                </span>
+              )}
+              {active && <Check className="w-4 h-4 text-accent" />}
+            </span>
+            <span className="block text-[11px] text-ink-faint dark:text-ink-faint-dark">
+              {voice.description}
+              {active ? ' · selected' : ''}
+            </span>
+          </button>
+          <button
+            onClick={() => playAi(voice.id)}
+            className="w-8 h-8 rounded-full flex items-center justify-center text-accent hover:bg-accent/10"
+            aria-label={playing ? `Stop ${voice.name}` : `Listen to ${voice.name}`}
+          >
+            {playing ? (
+              <Square className="w-3.5 h-3.5" fill="currentColor" />
+            ) : (
+              <Volume2 className="w-4 h-4" />
+            )}
+          </button>
+        </div>
+      </li>
+    );
   };
 
   const saveKey = () => {
@@ -139,6 +210,55 @@ export function SettingsDialog({ onClose }) {
     );
   };
 
+  /** Speed + Save / Cancel (both voice lists). Nothing changes until Save. */
+  const speedAndSave = (
+    <>
+      <label className="mt-4 flex items-center gap-3 text-sm text-ink dark:text-ink-soft-dark">
+        <span className="w-16 flex-shrink-0 text-xs font-semibold text-ink-faint dark:text-ink-faint-dark">
+          Speed
+        </span>
+        <input
+          type="range"
+          min="0.8"
+          max="1.2"
+          step="0.05"
+          value={voiceSettings.rate}
+          onChange={(e) => updateVoice({ rate: Number(e.target.value) })}
+          className="flex-1 accent-accent"
+        />
+        <span className="w-12 text-right font-mono text-xs">{voiceSettings.rate.toFixed(2)}×</span>
+      </label>
+
+      {/* Nothing changes until Save */}
+      <div className="mt-4 flex items-center justify-end gap-2">
+        {voiceDirty && (
+          <span className="mr-auto text-xs font-medium text-amber-600 dark:text-amber-400">
+            Not saved yet
+          </span>
+        )}
+        {voiceDirty && (
+          <button
+            onClick={() => {
+              stopPreviewSpeech();
+              setVoiceState(savedVoice);
+            }}
+            className="px-3 h-10 rounded-xl border border-line dark:border-line-dark text-sm font-medium text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark"
+          >
+            Cancel
+          </button>
+        )}
+        <button
+          onClick={saveVoice}
+          disabled={!voiceDirty && !voiceSaved}
+          className="flex items-center gap-1.5 px-4 h-10 rounded-xl bg-accent text-white text-sm font-semibold hover:bg-accent-dark disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {voiceSaved && <Check className="w-4 h-4" />}
+          {voiceSaved ? 'Voice saved' : 'Save voice'}
+        </button>
+      </div>
+    </>
+  );
+
   return createPortal(
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
@@ -167,11 +287,26 @@ export function SettingsDialog({ onClose }) {
             <h3 className="flex items-center gap-2 text-sm font-semibold text-ink dark:text-ink-soft-dark">
               <Volume2 className="w-4 h-4 text-accent" /> AI voice
             </h3>
-            <p className="text-xs text-ink-soft dark:text-ink-faint-dark mt-1 mb-3">
-              Used when a step has text but no recorded voice. Natural voices sound the most human —
-              Microsoft Edge offers the best ones (e.g. “Neerja (Natural) – English India”).
-            </p>
-            {!isTTSSupported() ? (
+            {aiVoiceSupported ? (
+              <>
+                <p className="text-xs text-ink-soft dark:text-ink-faint-dark mt-1 mb-3">
+                  Reads steps that have text but no recorded voice — the same voice in the
+                  walkthrough and in the downloaded video.
+                </p>
+                <ul className="space-y-1">{AI_VOICES.map(renderAiVoice)}</ul>
+                <p className="mt-2 text-[11px] text-ink-faint dark:text-ink-faint-dark">
+                  Each voice downloads once (about 60 MB) the first time it is played.
+                </p>
+                {speedAndSave}
+              </>
+            ) : (
+              /* Browsers that can't run the AI voice: their own voices, as before. */
+              <p className="text-xs text-ink-soft dark:text-ink-faint-dark mt-1 mb-3">
+                Used when a step has text but no recorded voice. Natural voices sound the most human
+                — Microsoft Edge offers the best ones (e.g. “Neerja (Natural) – English India”).
+              </p>
+            )}
+            {aiVoiceSupported ? null : !isTTSSupported() ? (
               <p className="text-sm text-danger">This browser has no text-to-speech.</p>
             ) : voices.length === 0 ? (
               <p className="text-sm text-ink-faint">Loading voices…</p>
@@ -233,51 +368,7 @@ export function SettingsDialog({ onClose }) {
                     </ul>
                   </details>
                 )}
-                <label className="mt-4 flex items-center gap-3 text-sm text-ink dark:text-ink-soft-dark">
-                  <span className="w-16 flex-shrink-0 text-xs font-semibold text-ink-faint dark:text-ink-faint-dark">
-                    Speed
-                  </span>
-                  <input
-                    type="range"
-                    min="0.8"
-                    max="1.2"
-                    step="0.05"
-                    value={voiceSettings.rate}
-                    onChange={(e) => updateVoice({ rate: Number(e.target.value) })}
-                    className="flex-1 accent-accent"
-                  />
-                  <span className="w-12 text-right font-mono text-xs">
-                    {voiceSettings.rate.toFixed(2)}×
-                  </span>
-                </label>
-
-                {/* Nothing changes until Save */}
-                <div className="mt-4 flex items-center justify-end gap-2">
-                  {voiceDirty && (
-                    <span className="mr-auto text-xs font-medium text-amber-600 dark:text-amber-400">
-                      Not saved yet
-                    </span>
-                  )}
-                  {voiceDirty && (
-                    <button
-                      onClick={() => {
-                        stopPreviewSpeech();
-                        setVoiceState(savedVoice);
-                      }}
-                      className="px-3 h-10 rounded-xl border border-line dark:border-line-dark text-sm font-medium text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                  <button
-                    onClick={saveVoice}
-                    disabled={!voiceDirty && !voiceSaved}
-                    className="flex items-center gap-1.5 px-4 h-10 rounded-xl bg-accent text-white text-sm font-semibold hover:bg-accent-dark disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    {voiceSaved && <Check className="w-4 h-4" />}
-                    {voiceSaved ? 'Voice saved' : 'Save voice'}
-                  </button>
-                </div>
+                {speedAndSave}
               </>
             )}
           </section>
@@ -289,8 +380,8 @@ export function SettingsDialog({ onClose }) {
             </h3>
             <p className="text-xs text-ink-soft dark:text-ink-faint-dark mt-1 mb-3">
               Paste your own Anthropic API key to let Claude rewrite step descriptions so they sound
-              natural. The key stays in this browser and is only sent to Anthropic. Without a key,
-              “Improve” still tidies the text offline.
+              natural. Your key is only ever sent to Anthropic. Without a key,
+              “Improve” still tidies the text.
             </p>
             <div className="flex gap-2">
               <div className="relative flex-1">

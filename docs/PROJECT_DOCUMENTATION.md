@@ -13,7 +13,7 @@ The entire application runs in the browser — no backend server, no API, no ser
 ```
 Create Course (title + context)
     ↓
-Add Steps (up to 10)
+Add Steps (as many as you need)
     ↓
 Upload Screenshot per Step
     ↓

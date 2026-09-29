@@ -144,6 +144,7 @@ export async function importCourseZip(file) {
   const remap = (mediaId) => (mediaId ? (idMap.get(mediaId) ?? mediaId) : mediaId);
 
   course.baseImageId = remap(course.baseImageId);
+  if (Array.isArray(course.gallery)) course.gallery = course.gallery.map(remap);
   for (const step of course.steps) {
     step.id = nextId('step');
     step.imageId = remap(step.imageId);

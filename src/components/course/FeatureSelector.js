@@ -64,6 +64,10 @@ function handleStyle(handle) {
  *   number?: number,     // step number shown on the box (several areas on one screenshot)
  *   otherAreas?: { id: string, number: number, region: Region }[],  // other steps on this screenshot
  *   onSelectArea?: (id: string) => void,                            // click one to edit it
+ *   itemName?: string,   // what a numbered box is called in its tooltip ("Step 3", "Area 3")
+ *   drawHint?: string,   // text of the badge shown while drawing
+ *   glide?: boolean,     // the box glides to its new place when `region` changes (not while dragging)
+ *   focusKey?: string,   // changing it plays a short pulse on the box (focus moved here)
  * }} props
  */
 export function FeatureSelector({
@@ -74,6 +78,10 @@ export function FeatureSelector({
   number,
   otherAreas = [],
   onSelectArea,
+  itemName = 'Step',
+  drawHint = 'Drag over the feature',
+  glide = false,
+  focusKey,
 }) {
   const containerRef = useRef(null);
   const [ratio, setRatio] = useState(DEFAULT_RATIO);
@@ -165,13 +173,23 @@ export function FeatureSelector({
       onRegionChange({ x, y, w, h });
     };
 
-    const handleUp = () => {
+    const handleUp = (e) => {
+      // Use the RELEASE position itself (the last pointermove may not have been
+      // rendered yet), so the box ends exactly where the mouse was let go.
+      const pos =
+        drawing && drawStart && e.type !== 'pointercancel'
+          ? getRelativePos(e.clientX, e.clientY)
+          : null;
+      const box = pos
+        ? {
+            x: Math.min(drawStart.x, pos.x),
+            y: Math.min(drawStart.y, pos.y),
+            w: Math.abs(pos.x - drawStart.x),
+            h: Math.abs(pos.y - drawStart.y),
+          }
+        : null;
       // Ignore accidental taps / tiny drags.
-      const isBigEnough =
-        drawCurrent && drawCurrent.w > MIN_REGION_PCT && drawCurrent.h > MIN_REGION_PCT;
-      if (drawing && isBigEnough) {
-        onRegionChange({ x: drawCurrent.x, y: drawCurrent.y, w: drawCurrent.w, h: drawCurrent.h });
-      }
+      if (box && box.w > MIN_REGION_PCT && box.h > MIN_REGION_PCT) onRegionChange(box);
       setDrawing(false);
       setDrawStart(null);
       setDrawCurrent(null);
@@ -244,7 +262,7 @@ export function FeatureSelector({
             className="absolute border-2 border-dashed border-white/80 rounded-md bg-black/10 hover:bg-accent/15 hover:border-accent transition-colors"
             style={regionStyle(area.region)}
             aria-label={`Edit area ${area.number}`}
-            title={`Step ${area.number} — click to edit`}
+            title={`${itemName} ${area.number} — click to edit`}
           >
             <span className="absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full bg-ink/80 text-white text-[10px] font-bold flex items-center justify-center shadow">
               {area.number}
@@ -256,7 +274,7 @@ export function FeatureSelector({
       {drawMode && imageUrl && !drawing && (
         <div className="absolute inset-0 bg-black/25 pointer-events-none flex items-start justify-center pt-4">
           <span className="flex items-center gap-1.5 text-xs font-semibold text-white bg-accent px-3 py-1.5 rounded-full shadow-lg">
-            <Crosshair className="w-3.5 h-3.5" /> Drag over the feature
+            <Crosshair className="w-3.5 h-3.5" /> {drawHint}
           </span>
         </div>
       )}
@@ -264,10 +282,20 @@ export function FeatureSelector({
       {/* Saved region with move/resize/clear controls (adjust mode only) */}
       {region && !drawMode && (
         <div
-          className="absolute border-2 border-accent rounded-md bg-accent/10 cursor-move"
+          className={`absolute border-2 border-accent rounded-md bg-accent/10 cursor-move ${
+            glide && !dragInfo
+              ? 'transition-all duration-300 ease-out motion-reduce:transition-none'
+              : ''
+          }`}
           style={regionStyle(region)}
           onPointerDown={(e) => startDrag(e, 'move')}
         >
+          {focusKey && (
+            <span
+              key={focusKey}
+              className="hs-area-focus absolute inset-0 rounded-md pointer-events-none"
+            />
+          )}
           {number != null && (
             <span className="absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full bg-accent text-white text-[10px] font-bold flex items-center justify-center shadow pointer-events-none">
               {number}

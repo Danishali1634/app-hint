@@ -11,7 +11,7 @@
  *   - Editor "Preview" button
  *   - CoursePreviewPage   (#/preview/:id)
  *   - SharedCoursePage    (#/s/...  — share links)
- *   - EmbedPage           (#/embed/... — inside an <iframe>, `embedded`)
+ *   - EmbedPage           (#/e/... — inside an <iframe>, `embedded`)
  *
  * NEVER AUTOPLAYS: the player always opens paused on step 1 with a big ▶
  * button over the screenshot (like a YouTube video). Nothing moves or speaks
@@ -73,21 +73,31 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Pause, X, CheckCircle2, Maximize2, Minimize2 } from 'lucide-react';
+import { Play, Pause, X, Maximize2, Minimize2 } from 'lucide-react';
 import { useElementSize } from '@/hooks/useElementSize';
 import { useImageAspectRatios } from '@/hooks/useImageAspectRatios';
-import { hasNarration, useNarration } from '@/hooks/useNarration';
+import { hasNarration, useAiVoicePrefetch, useNarration } from '@/hooks/useNarration';
 import { Spinner } from '@/components/ui/Spinner';
 import { WALKTHROUGH_TIMING } from '@/constants';
-import { focusedCenter } from '@/utils/camera';
 import { CaptionContent, TextOnlyStage, WalkthroughStage } from './WalkthroughStage';
-import { Timeline } from './Timeline';
-import { continuesScreen } from '@/services/video/timeline';
+import { clickOrigin, isClickAction } from '@/utils/course';
+import { StepList, StepsToggle, Timeline } from './Timeline';
+import { OutroCard } from './OutroCard';
+import { clickCount, transitionFor } from '@/services/video/timeline';
 
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
 
 /** Phase durations, shared with the video export. */
 const DURATION = WALKTHROUGH_TIMING;
+
+/** The step whose screenshot sets the frame: the first sub-step of the same Global Step. */
+function frameRefId(steps, index) {
+  const groupId = steps[index]?.groupId;
+  if (!groupId) return steps[index]?.id;
+  let i = index;
+  while (i > 0 && steps[i - 1].groupId === groupId && steps[i - 1].imageData) i--;
+  return steps[i].id;
+}
 
 /** Screens narrower than this show the caption under the stage instead of floating. */
 const FLOATING_CAPTION_MIN_WIDTH = 640;
@@ -95,6 +105,9 @@ const FLOATING_CAPTION_MIN_WIDTH = 640;
 const DOCKED_CAPTION_SPACE = 150;
 /** Players shorter than this (px) switch to the compact layout (small embeds). */
 const COMPACT_MAX_HEIGHT = 480;
+/** Compact layout: height of the control bar over the picture (h-12) minus the
+ *  stage area's padding — the caption keeps out of it. */
+const COMPACT_CONTROL_BAR_PX = 42;
 const SILENT_NARRATION = { mode: 'none', speaking: false, current: 0, duration: 0 };
 /** How long the previous screen stays on stage while the next one enters (ms). */
 const LEAVE_MS = 650;
@@ -116,6 +129,9 @@ const COMPACT_ICON_BUTTON_CLASS_DARK =
  *   onInsertStep?: (position: number) => void,          // edit mode: "+" on the timeline boundaries
  *   pauseRequest?: number,                              // a new non-zero value pauses (e.g. "Edit" pressed)
  *   hideControls?: boolean,                             // the host renders its own progress UI
+ *   hideStepList?: boolean,                             // no side list of steps: more room for the picture
+ *   dockCaption?: boolean,                              // caption always UNDER the picture, never over it
+ *   holdMs?: number,                                    // extra time on each step after it is read (tutorials: time to look)
  * }} props
  */
 export function WalkthroughPlayer({
@@ -130,6 +146,9 @@ export function WalkthroughPlayer({
   requestedIndex = null,
   pauseRequest = 0,
   hideControls = false,
+  hideStepList = false,
+  dockCaption = false,
+  holdMs = 0,
 }) {
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState('enter');
@@ -158,6 +177,8 @@ export function WalkthroughPlayer({
   const narration = useNarration();
   const { start: startNarration, stop: stopNarration, pause: pauseNarration } = narration;
   const { resume: resumeNarration } = narration;
+  // The AI voice for every step is prepared while the player waits for ▶.
+  useAiVoicePrefetch(steps);
   const ratios = useImageAspectRatios(steps);
   const [stageAreaRef, stageArea] = useElementSize();
   const [rootRef, rootSize, rootNode] = useElementSize();
@@ -167,7 +188,7 @@ export function WalkthroughPlayer({
   const isLast = index === steps.length - 1;
   const hasImage = !!step?.imageData;
   const region = hasImage ? step.region : null;
-  const isClick = !!region && step.action !== 'look';
+  const isClick = !!region && isClickAction(step);
   const stepHasNarration = hasNarration(step);
   // Wait for the screenshot's real ratio before animating (camera math needs it).
   const ready = !!step && (!hasImage || ratios[step.id] != null);
@@ -191,9 +212,17 @@ export function WalkthroughPlayer({
       const from = steps[index];
       const to = steps[i];
       if (!to) return;
-      const fromClick = !!from?.imageData && !!from.region && from.action !== 'look';
+      const fromClick = !!from?.imageData && !!from.region && isClickAction(from);
 
-      if (smooth && i !== index && from?.imageData && from.imageData === to.imageData) {
+      // Same screenshot — or another screenshot of the SAME Global Step (the same
+      // page in another state): the camera glides straight on; a new screenshot
+      // crossfades in inside the moving camera (WalkthroughStage), so all its
+      // sub-steps feel like one page.
+      const samePage =
+        from?.imageData &&
+        to.imageData &&
+        (from.imageData === to.imageData || (from.groupId && from.groupId === to.groupId));
+      if (smooth && i !== index && samePage) {
         setContinued(true);
         setLeaving(null);
         setEnterOrigin(null);
@@ -209,7 +238,7 @@ export function WalkthroughPlayer({
           ? { step: from, number: index + 1, key: stageKey, kind: fromClick ? 'click' : 'look' }
           : null,
       );
-      setEnterOrigin(smooth && fromClick ? focusedCenter(from.region) : null);
+      setEnterOrigin(smooth && fromClick ? clickOrigin(from) : null);
       setStageKey((k) => k + 1);
       setIndex(i);
       setPhase('enter');
@@ -250,15 +279,12 @@ export function WalkthroughPlayer({
     if (!to) return;
     stopNarration();
     const prev = steps[moment.index - 1];
-    const prevClick = !!prev?.imageData && !!prev.region && prev.action !== 'look';
+    const prevClick = !!prev?.imageData && !!prev.region && isClickAction(prev);
     const early = moment.phase === 'enter' || moment.phase === 'overview';
+    const entering = transitionFor(steps, moment.index) === 'enter';
     setLeaving(null);
-    setContinued(continuesScreen(steps, moment.index));
-    setEnterOrigin(
-      early && prevClick && !continuesScreen(steps, moment.index)
-        ? focusedCenter(prev.region)
-        : null,
-    );
+    setContinued(!entering);
+    setEnterOrigin(early && prevClick && entering ? clickOrigin(prev) : null);
     setStageKey((k) => k + 1);
     setIndex(moment.index);
     setPhase(moment.phase);
@@ -361,7 +387,7 @@ export function WalkthroughPlayer({
       case 'narrate':
         return stepHasNarration ? null : DURATION.silentNarrate; // voice ends it
       case 'action':
-        return isClick ? DURATION.clickAction : DURATION.lookAction;
+        return (isClick ? DURATION.clickAction * clickCount(step) : DURATION.lookAction) + holdMs;
       case 'done':
         return autoAdvance && !isLast ? DURATION.doneAutoResume : null; // user ends it
       default:
@@ -495,10 +521,15 @@ export function WalkthroughPlayer({
   const canExit = !embedded && !isInline && !!onExit;
 
   // Fit a box with the screenshot's exact ratio into the available area.
-  const floatingCaption = !compact && stageArea.width >= FLOATING_CAPTION_MIN_WIDTH;
+  const floatingCaption = !compact && !dockCaption && stageArea.width >= FLOATING_CAPTION_MIN_WIDTH;
   const reserveDocked = !compact && !floatingCaption;
-  const ratio = ratios[step.id] ?? 16 / 10;
-  const usableHeight = stageArea.height - (reserveDocked ? DOCKED_CAPTION_SPACE : 0);
+  // Sub-steps of one Global Step share its frame (the first screenshot's
+  // proportions), so a screenshot change never resizes the stage.
+  const ratio = ratios[frameRefId(steps, index)] ?? ratios[step.id] ?? 16 / 10;
+  // The docked caption lives in its own fixed slot UNDER the measured area
+  // (always rendered while docked), so the area never shrinks when it shows:
+  // no need to subtract its space here (subtracting it too shrank the picture twice).
+  const usableHeight = stageArea.height;
   const stageWidth = Math.max(0, Math.min(stageArea.width, usableHeight * ratio));
   const stageHeight = stageWidth / ratio;
 
@@ -588,7 +619,12 @@ export function WalkthroughPlayer({
               height={stageHeight}
               enterOrigin={enterOrigin}
               narration={narrationInfo}
-              floatingCaption={false}
+              // Placed next to the feature without covering it, and never
+              // under the control bar (utils/captionPlacement).
+              floatingCaption
+              compactCaption
+              areaSize={stageArea}
+              reserveBottom={COMPACT_CONTROL_BAR_PX}
             />
           ) : (
             <TextOnlyStage
@@ -597,19 +633,6 @@ export function WalkthroughPlayer({
               stepNumber={index + 1}
               narration={narrationInfo}
             />
-          )}
-          {showCompactCaption && (
-            // Top of the frame, so it never collides with the control bar.
-            <div className="hs-caption-in absolute left-2 right-2 top-2 z-20 flex justify-center pointer-events-none">
-              <div className="w-[min(460px,100%)]">
-                <CaptionContent
-                  step={step}
-                  stepNumber={index + 1}
-                  narration={narrationInfo}
-                  compact
-                />
-              </div>
-            </div>
           )}
         </div>
 
@@ -635,16 +658,7 @@ export function WalkthroughPlayer({
         )}
 
         {isFinished && (
-          <div className="hs-caption-in absolute top-2 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-full bg-black/70 backdrop-blur border border-white/10 pl-3 pr-1.5 py-1.5">
-            <CheckCircle2 className="w-4 h-4 text-teal-dark flex-shrink-0" />
-            <span className="text-xs font-semibold whitespace-nowrap">That&apos;s it!</span>
-            <button
-              onClick={restart}
-              className="px-2.5 py-1 rounded-full bg-accent text-xs font-semibold hover:bg-accent-dark transition-colors whitespace-nowrap"
-            >
-              Watch again
-            </button>
-          </div>
+          <OutroCard title={title} stepCount={steps.length} onRestart={restart} compact />
         )}
 
         {/* Control bar over the picture. While playing it fades out and comes
@@ -717,107 +731,115 @@ export function WalkthroughPlayer({
         </div>
       )}
 
-      {/* ── Stage area (measured) ── */}
-      <div
-        className={`flex-1 min-h-0 flex flex-col items-center justify-center overflow-hidden ${
-          compact ? 'p-2 gap-2' : 'p-4 sm:p-8 gap-4'
-        }`}
-      >
+      <div className="flex-1 min-h-0 flex flex-col md:flex-row">
+        {/* ── Stage area (measured) ── */}
         <div
-          ref={stageAreaRef}
-          className="relative w-full flex-1 min-h-0 flex items-center justify-center"
+          className={`flex-1 min-h-0 min-w-0 flex flex-col items-center justify-center overflow-hidden ${
+            compact ? 'p-2 gap-2' : 'p-4 sm:p-8 gap-4'
+          }`}
         >
-          {leavingNode}
-          {!ready || stageArea.width === 0 ? (
-            <Spinner />
-          ) : hasImage ? (
-            <WalkthroughStage
-              key={`stage-${stageKey}`}
-              continued={continued}
-              step={step}
-              stepNumber={index + 1}
-              phase={phase}
-              width={stageWidth}
-              height={stageHeight}
-              enterOrigin={enterOrigin}
-              narration={narrationInfo}
-              floatingCaption={floatingCaption}
-            />
-          ) : (
-            <TextOnlyStage
-              key={`stage-${stageKey}`}
-              step={step}
-              stepNumber={index + 1}
-              narration={narrationInfo}
-            />
-          )}
+          <div
+            ref={stageAreaRef}
+            className="relative w-full flex-1 min-h-0 flex items-center justify-center"
+          >
+            {leavingNode}
+            {!ready || stageArea.width === 0 ? (
+              <Spinner />
+            ) : hasImage ? (
+              <WalkthroughStage
+                key={`stage-${stageKey}`}
+                continued={continued}
+                step={step}
+                stepNumber={index + 1}
+                phase={phase}
+                width={stageWidth}
+                height={stageHeight}
+                enterOrigin={enterOrigin}
+                narration={narrationInfo}
+                floatingCaption={floatingCaption}
+                areaSize={stageArea}
+              />
+            ) : (
+              <TextOnlyStage
+                key={`stage-${stageKey}`}
+                step={step}
+                stepNumber={index + 1}
+                narration={narrationInfo}
+              />
+            )}
 
-          {showCompactCaption && (
-            <div className="hs-caption-in absolute left-2 right-2 bottom-2 z-20 flex justify-center pointer-events-none">
-              <div className="w-[min(420px,100%)]">
-                <CaptionContent
-                  step={step}
-                  stepNumber={index + 1}
-                  narration={narrationInfo}
-                  compact
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Big ▶ before the first play — nothing starts on its own */}
-          {!hasStarted && ready && stageArea.width > 0 && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center">
-              <button
-                onClick={startPlayback}
-                className="group flex flex-col items-center gap-3"
-                aria-label="Play walkthrough"
-              >
-                <span
-                  className={`rounded-full bg-accent text-white flex items-center justify-center shadow-glow ring-8 ring-accent/20 group-hover:scale-105 group-hover:ring-accent/30 transition-all duration-300 ${
-                    compact ? 'w-14 h-14' : 'w-24 h-24'
-                  }`}
-                >
-                  <Play
-                    className={compact ? 'w-6 h-6 ml-1' : 'w-10 h-10 ml-1.5'}
-                    fill="currentColor"
+            {showCompactCaption && (
+              <div className="hs-caption-in absolute left-2 right-2 bottom-2 z-20 flex justify-center pointer-events-none">
+                <div className="w-[min(420px,100%)]">
+                  <CaptionContent
+                    step={step}
+                    stepNumber={index + 1}
+                    narration={narrationInfo}
+                    compact
                   />
-                </span>
-                {!compact && (
-                  <span className="px-4 py-2 rounded-full bg-panel/90 dark:bg-panel-dark/90 backdrop-blur border border-line dark:border-line-dark shadow-premium text-sm font-semibold text-ink dark:text-ink-soft-dark">
-                    Play walkthrough · {steps.length} step{steps.length !== 1 ? 's' : ''}
-                  </span>
-                )}
-              </button>
-            </div>
-          )}
+                </div>
+              </div>
+            )}
 
-          {isFinished && (
+            {/* Big ▶ before the first play — nothing starts on its own */}
+            {!hasStarted && ready && stageArea.width > 0 && (
+              <div className="absolute inset-0 z-30 flex items-center justify-center">
+                <button
+                  onClick={startPlayback}
+                  className="group flex flex-col items-center gap-3"
+                  aria-label="Play walkthrough"
+                >
+                  <span
+                    className={`rounded-full bg-accent text-white flex items-center justify-center shadow-glow ring-8 ring-accent/20 group-hover:scale-105 group-hover:ring-accent/30 transition-all duration-300 ${
+                      compact ? 'w-14 h-14' : 'w-24 h-24'
+                    }`}
+                  >
+                    <Play
+                      className={compact ? 'w-6 h-6 ml-1' : 'w-10 h-10 ml-1.5'}
+                      fill="currentColor"
+                    />
+                  </span>
+                  {!compact && (
+                    <span className="px-4 py-2 rounded-full bg-panel/90 dark:bg-panel-dark/90 backdrop-blur border border-line dark:border-line-dark shadow-premium text-sm font-semibold text-ink dark:text-ink-soft-dark">
+                      Play walkthrough · {steps.length} step{steps.length !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                </button>
+              </div>
+            )}
+
+            {isFinished && (
+              <OutroCard
+                title={title}
+                stepCount={steps.length}
+                onRestart={restart}
+                compact={compact}
+              />
+            )}
+          </div>
+
+          {reserveDocked && (
             <div
-              className={`hs-caption-in absolute top-0 left-1/2 -translate-x-1/2 z-30 flex items-center rounded-2xl bg-panel dark:bg-panel-dark border border-line dark:border-line-dark shadow-2xl ${
-                compact ? 'gap-2 px-3 py-2' : 'gap-3 px-4 py-3'
-              }`}
+              className="w-[min(560px,100%)] flex-shrink-0"
+              style={{ height: DOCKED_CAPTION_SPACE - 16 }}
             >
-              <CheckCircle2 className="w-5 h-5 text-teal dark:text-teal-dark flex-shrink-0" />
-              {!compact && (
-                <span className="text-sm font-semibold text-ink dark:text-ink-soft-dark whitespace-nowrap">
-                  That&apos;s the whole feature!
-                </span>
+              {showDockedCaption && (
+                <div className="hs-caption-in">
+                  <CaptionContent step={step} stepNumber={index + 1} narration={narrationInfo} />
+                </div>
               )}
-              <button
-                onClick={restart}
-                className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs sm:text-sm font-semibold hover:bg-accent-dark transition-colors whitespace-nowrap"
-              >
-                Watch again
-              </button>
             </div>
           )}
         </div>
-
-        {showDockedCaption && (
-          <div className="hs-caption-in w-[min(560px,100%)] flex-shrink-0">
-            <CaptionContent step={step} stepNumber={index + 1} narration={narrationInfo} />
-          </div>
+        {!hideStepList && (
+          <StepList
+            steps={steps}
+            index={index}
+            voiceMs={voiceMs}
+            onSeek={seekTo}
+            // onClose={() => setStepsOpen(false)}
+            className="hs-caption-in max-h-56 md:max-h-none md:w-72 lg:w-80 flex-shrink-0 border-t md:border-t-0 md:border-l border-line dark:border-line-dark"
+          />
         )}
       </div>
 

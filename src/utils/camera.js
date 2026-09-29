@@ -36,11 +36,15 @@ const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 /**
  * Camera view that zooms onto a region.
  * @param {Region} region
+ * @param {number} [zoom]  use this zoom instead of the normal one (clamped to 1–MAX_ZOOM)
+ * @param {{ x: number, y: number }} [center]  where the region's centre should land
+ *                         (stage %) instead of FOCUS_CENTER. Both overrides are used by
+ *                         utils/captionPlacement.captionAwareView to make room for the caption.
  * @returns {CameraView}
  */
-export function computeFocusView(region) {
+export function computeFocusView(region, zoom, center = FOCUS_CENTER) {
   const largestSide = Math.max(region.w, region.h, 1);
-  const s = clamp(FOCUS_FILL / largestSide, 1, MAX_ZOOM);
+  const s = clamp(zoom ?? FOCUS_FILL / largestSide, 1, MAX_ZOOM);
 
   const centerX = region.x + region.w / 2;
   const centerY = region.y + region.h / 2;
@@ -50,8 +54,8 @@ export function computeFocusView(region) {
   const minT = 100 - 100 * s;
   return {
     s,
-    tx: clamp(FOCUS_CENTER.x - centerX * s, minT, 0),
-    ty: clamp(FOCUS_CENTER.y - centerY * s, minT, 0),
+    tx: clamp(center.x - centerX * s, minT, 0),
+    ty: clamp(center.y - centerY * s, minT, 0),
   };
 }
 

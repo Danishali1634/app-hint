@@ -14,17 +14,21 @@
     /* Inter's single-storey "a" + open digits read cleaner in UI text. */
     font-feature-settings: 'cv11', 'ss01', 'ss03';
     font-variation-settings: normal;
-    /* A soft accent glow at the top of every page — premium, not loud. */
+    /* Light: soft and warm — a gentle blue wash at the top, a hint of peach on
+       the right, a touch of mint low left. Nothing clinical. */
     background-image:
-      radial-gradient(1200px 520px at 50% -120px, rgba(99, 91, 255, 0.1), transparent 70%),
-      radial-gradient(700px 360px at 90% -80px, rgba(124, 58, 237, 0.06), transparent 70%);
+      radial-gradient(1100px 520px at 50% -160px, rgba(21, 112, 239, 0.09), transparent 70%),
+      radial-gradient(760px 420px at 100% -40px, rgba(251, 191, 146, 0.16), transparent 70%),
+      radial-gradient(700px 420px at -5% 105%, rgba(14, 159, 110, 0.05), transparent 70%);
     background-attachment: fixed;
     background-repeat: no-repeat;
   }
+  /* Dark: cinematic near-black with one soft blue glow and a gentle vignette. */
   html.dark body {
     background-image:
-      radial-gradient(1200px 560px at 50% -140px, rgba(99, 91, 255, 0.2), transparent 70%),
-      radial-gradient(800px 400px at 90% -100px, rgba(124, 58, 237, 0.12), transparent 70%);
+      radial-gradient(1200px 560px at 50% -180px, rgba(21, 112, 239, 0.22), transparent 70%),
+      radial-gradient(900px 500px at 100% 0%, rgba(8, 145, 178, 0.08), transparent 70%),
+      radial-gradient(1600px 900px at 50% 120%, rgba(0, 0, 0, 0.6), transparent 70%);
   }
   h1,
   h2,
@@ -32,7 +36,7 @@
     letter-spacing: -0.02em;
   }
   ::selection {
-    background: rgba(99, 91, 255, 0.28);
+    background: rgba(21, 112, 239, 0.28);
   }
   *:focus-visible {
     @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-paper dark:ring-offset-paper-dark;
@@ -72,13 +76,13 @@
   0%,
   100% {
     box-shadow:
-      0 0 0 4px rgba(99, 91, 255, 0.3),
-      0 0 24px rgba(99, 91, 255, 0.4);
+      0 0 0 4px rgba(21, 112, 239, 0.3),
+      0 0 24px rgba(21, 112, 239, 0.4);
   }
   50% {
     box-shadow:
-      0 0 0 6px rgba(99, 91, 255, 0.5),
-      0 0 36px rgba(99, 91, 255, 0.6);
+      0 0 0 6px rgba(21, 112, 239, 0.5),
+      0 0 36px rgba(21, 112, 239, 0.6);
   }
 }
 
@@ -91,7 +95,9 @@
 .hs-camera {
   transform-origin: 0 0;
   transition: transform 1000ms cubic-bezier(0.65, 0, 0.35, 1);
-  will-change: transform;
+  /* No permanent will-change: with it, Chrome rasterises the screenshot once at
+     1× and only stretches that bitmap when the camera zooms in (blurry text).
+     Without it the browser redraws it sharp at the zoomed scale. */
 }
 
 /* Overlays positioned in stage % (spotlight, ring, cursor target) move with the camera. */
@@ -182,6 +188,78 @@
   animation: hs-saved-pop 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Another screenshot of the same Global Step fades in over the previous one,
+   inside the gliding camera (WalkthroughStage useScreenCrossfade). Keep the
+   duration in sync with WALKTHROUGH_TIMING.crossfade. */
+.hs-screen-in {
+  animation: hs-screen-in 220ms ease-out both;
+}
+@keyframes hs-screen-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 'type' steps: blinking caret + "typing" dots inside the highlighted field. */
+.hs-caret {
+  animation: hs-caret 1060ms steps(1, end) infinite;
+}
+@keyframes hs-caret {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+.hs-type-dot {
+  animation: hs-type-dot 960ms ease-in-out infinite;
+}
+@keyframes hs-type-dot {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-35%);
+    opacity: 1;
+  }
+}
+
+/* Multiple Steps: the next sub-step's details open in place (no reload). */
+.hs-area-open {
+  animation: hs-area-open 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes hs-area-open {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* …and its box on the screenshot gives one soft pulse when it gets the focus. */
+.hs-area-focus {
+  animation: hs-area-focus 520ms ease-out both;
+}
+@keyframes hs-area-focus {
+  from {
+    box-shadow: 0 0 0 0 rgba(21, 112, 239, 0.55);
+  }
+  to {
+    box-shadow: 0 0 0 14px rgba(21, 112, 239, 0);
+  }
+}
+
 @keyframes hs-panel-in {
   from {
     transform: translateX(24px);
@@ -203,14 +281,14 @@
 @keyframes hs-ring-flash {
   0% {
     transform: scale(1);
-    box-shadow: 0 0 0 0 rgba(99, 91, 255, 0.9);
+    box-shadow: 0 0 0 0 rgba(21, 112, 239, 0.9);
   }
   40% {
     transform: scale(0.96);
   }
   100% {
     transform: scale(1);
-    box-shadow: 0 0 0 18px rgba(99, 91, 255, 0);
+    box-shadow: 0 0 0 18px rgba(21, 112, 239, 0);
   }
 }
 
@@ -250,7 +328,8 @@
 
 /* Click ripple rings at the pointer tip. */
 .hs-ripple {
-  animation: hs-ripple 900ms ease-out forwards;
+  /* both: while an animation-delay runs, show the first frame (not a full ring) */
+  animation: hs-ripple 900ms ease-out both;
 }
 @keyframes hs-ripple {
   from {
@@ -300,10 +379,87 @@
 @keyframes hs-attention {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(99, 91, 255, 0.45);
+    box-shadow: 0 0 0 0 rgba(21, 112, 239, 0.45);
   }
   50% {
-    box-shadow: 0 0 0 8px rgba(99, 91, 255, 0);
+    box-shadow: 0 0 0 8px rgba(21, 112, 239, 0);
+  }
+}
+
+/* Happy ending (components/walkthrough/OutroCard.js): the same beats as the
+ * downloaded video's ending (renderFrame drawOutro) — the screen dims, sparkles
+ * rise, the circle pops in, the check mark draws itself, then the text rises. */
+.hs-outro {
+  animation: hs-outro-fade 600ms cubic-bezier(0.22, 1, 0.36, 1) 300ms both;
+}
+@keyframes hs-outro-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.hs-outro-pop {
+  animation: hs-outro-pop 500ms cubic-bezier(0.22, 1, 0.36, 1) 450ms both;
+}
+@keyframes hs-outro-pop {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.hs-outro-check {
+  stroke-dasharray: 70;
+  stroke-dashoffset: 70;
+  animation: hs-outro-check 500ms cubic-bezier(0.65, 0, 0.35, 1) 750ms forwards;
+}
+@keyframes hs-outro-check {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.hs-outro-rise {
+  animation: hs-outro-rise 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes hs-outro-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* A sparkle drifts outward (--dx/--dy = its direction) and fades. */
+.hs-outro-spark {
+  animation: hs-outro-spark 1.6s linear infinite;
+}
+@keyframes hs-outro-spark {
+  from {
+    transform: translate(calc(var(--dx) * 70px), calc(var(--dy) * 49px));
+    opacity: 0.9;
+  }
+  to {
+    transform: translate(calc(var(--dx) * 220px), calc(var(--dy) * 154px - 40px));
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hs-outro-spark {
+    display: none;
+  }
+  .hs-outro,
+  .hs-outro-pop,
+  .hs-outro-check,
+  .hs-outro-rise {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
   }
 }
 
@@ -518,6 +674,17 @@
   }
 }
 
+/* Tooltip bubble (components/ui/Tooltip) */
+.hs-tooltip-in {
+  animation: hs-tooltip-in 140ms ease-out;
+}
+@keyframes hs-tooltip-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
 /* Small in-editor hints: "drag over the feature", "drop a screenshot here". */
 .mini-select-box {
   animation: mini-select-box 3.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
@@ -629,9 +796,14 @@
   .hs-ripple,
   .hs-caption-in,
   .hs-panel-in,
+  .hs-area-open,
+  .hs-area-focus,
+  .hs-screen-in,
+  .hs-type-dot,
   .hs-saved-pop,
   .hs-eq-bar,
-  .hs-attention {
+  .hs-attention,
+  .hs-tooltip-in {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
   }

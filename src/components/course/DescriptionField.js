@@ -9,9 +9,10 @@
 import { useEffect, useState } from 'react';
 import { Sparkles, Volume2, Square, Undo2, Loader2 } from 'lucide-react';
 import { improveWithClaude, polishText } from '@/services/text/enhance';
-import { previewSpeech, stopPreviewSpeech, isTTSSupported } from '@/services/audio/tts';
+import { canSpeakText, previewSpeech, stopPreviewSpeech } from '@/services/audio/tts';
 import { getAiKey } from '@/services/storage/settings';
 import { useToast } from '@/hooks/useToast';
+import { Tooltip } from '@/components/ui/Tooltip';
 
 const TOOL_BUTTON_CLASS =
   'flex items-center gap-1.5 px-2.5 h-8 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50';
@@ -23,11 +24,21 @@ const TOOL_BUTTON_CLASS =
  *   onChange: (text: string) => void,
  *   label?: string,
  *   pageName?: string,
- *   action?: 'click' | 'look',
+ *   action?: 'click' | 'look' | 'type',
  *   rows?: number,
+ *   grow?: boolean,   // fill the parent's height (the textarea grows)
  * }} props
  */
-export function DescriptionField({ id, value, onChange, label, pageName, action, rows = 4 }) {
+export function DescriptionField({
+  id,
+  value,
+  onChange,
+  label,
+  pageName,
+  action,
+  rows = 4,
+  grow = false,
+}) {
   const { notify } = useToast();
   const [improving, setImproving] = useState(false);
   const [previous, setPrevious] = useState(null); // for Undo
@@ -73,7 +84,7 @@ export function DescriptionField({ id, value, onChange, label, pageName, action,
   };
 
   return (
-    <div>
+    <div className={grow ? 'flex-1 min-h-0 flex flex-col' : undefined}>
       <textarea
         id={id}
         value={value}
@@ -81,52 +92,61 @@ export function DescriptionField({ id, value, onChange, label, pageName, action,
           setPrevious(null);
           onChange(e.target.value);
         }}
-        placeholder="Describe what to do here… (e.g. 'Yahan click karke aap graph data dekh sakte hain.')"
+        placeholder="What should the viewer do here?"
         rows={rows}
-        className="w-full px-3 py-2.5 rounded-xl bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent transition-colors resize-none"
+        className={`${grow ? 'flex-1 min-h-[6rem] ' : ''}w-full px-3 py-2.5 rounded-xl bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent transition-colors resize-none`}
       />
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <button
-          onClick={improve}
-          disabled={improving}
-          className={`${TOOL_BUTTON_CLASS} bg-accent/10 text-accent hover:bg-accent/15`}
-          title={
+        {/* Improve — switched off for now.
+        <Tooltip
+          label={
             getAiKey()
-              ? 'Rewrite with AI'
-              : 'Tidy up the text (add an AI key in Settings for rewrites)'
+              ? 'Rewrite your text with AI'
+              : 'Tidy up your text (add an AI key in Settings for full rewrites)'
           }
         >
-          {improving ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <Sparkles className="w-3.5 h-3.5" />
-          )}
-          Improve
-        </button>
-        {previous !== null && (
           <button
-            onClick={() => {
-              onChange(previous);
-              setPrevious(null);
-            }}
-            className={`${TOOL_BUTTON_CLASS} text-ink-soft dark:text-ink-faint-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark`}
+            onClick={improve}
+            disabled={improving}
+            className={`${TOOL_BUTTON_CLASS} bg-accent/10 text-accent hover:bg-accent/15`}
           >
-            <Undo2 className="w-3.5 h-3.5" /> Undo
-          </button>
-        )}
-        {isTTSSupported() && (
-          <button
-            onClick={listen}
-            disabled={!value.trim()}
-            className={`${TOOL_BUTTON_CLASS} text-violet dark:text-violet-dark hover:bg-violet/10`}
-          >
-            {listening ? (
-              <Square className="w-3 h-3" fill="currentColor" />
+            {improving ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
             ) : (
-              <Volume2 className="w-3.5 h-3.5" />
+              <Sparkles className="w-3.5 h-3.5" />
             )}
-            {listening ? 'Stop' : 'Listen'}
+            Improve
           </button>
+        </Tooltip>
+        */}
+        {previous !== null && (
+          <Tooltip label="Bring back your own text">
+            <button
+              onClick={() => {
+                onChange(previous);
+                setPrevious(null);
+              }}
+              className={`${TOOL_BUTTON_CLASS} text-ink-soft dark:text-ink-faint-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark`}
+            >
+              <Undo2 className="w-3.5 h-3.5" /> Undo
+            </button>
+          </Tooltip>
+        )}
+        {canSpeakText() && (
+          <Tooltip label={listening ? 'Stop' : 'Hear it in the AI voice'}>
+            <button
+              onClick={listen}
+              disabled={!value.trim()}
+              className={`${TOOL_BUTTON_CLASS} text-violet dark:text-violet-dark hover:bg-violet/10`}
+            >
+              {listening ? (
+                <Square className="w-3 h-3" fill="currentColor" />
+              ) : (
+                <Volume2 className="w-3.5 h-3.5" />
+              )}
+              {listening ? 'Stop' : 'Listen'}
+            </button>
+          </Tooltip>
         )}
       </div>
     </div>

@@ -26,7 +26,7 @@ export function MiniHint({ variant }) {
       ) : (
         <>
           <div className="absolute inset-x-0 top-0 h-[16%] bg-[#1f2a44]" />
-          <div className="absolute left-[30%] top-[38%] w-[40%] h-[24%] rounded bg-[#2563eb]" />
+          <div className="absolute left-[30%] top-[38%] w-[40%] h-[24%] rounded bg-[#0F766E]" />
           <div className="absolute left-[8%] right-[8%] top-[74%] h-[10%] rounded-sm bg-[#e3e7ef]" />
           <div className="mini-select-box absolute left-[27%] top-[35%] rounded border-2 border-dashed border-accent bg-accent/15" />
           <svg

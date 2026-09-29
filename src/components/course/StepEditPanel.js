@@ -4,8 +4,8 @@
  * mode or clicks the timeline.
  *
  * KEPT DELIBERATELY SMALL — three things, in this order:
- *   1. What's said   the recorded voice if there is one (it has priority when
- *                    playing), otherwise the text the AI voice reads.
+ *   1. What's said   the text the AI voice reads. (Voice recording / upload is
+ *                    switched off for now — see the commented-out code below.)
  *   2. Highlighted area  the screenshot with the selected box; "Change area"
  *                    redraws it. The screenshot itself can be replaced.
  *   3. Add step before / after, Delete step (small links at the bottom).
@@ -16,16 +16,18 @@
  */
 
 import { useState } from 'react';
-import { X, Upload, Plus, Trash2, Mic, Type } from 'lucide-react';
+import { X, Upload, Plus, Trash2 } from 'lucide-react';
 import { putMedia } from '@/services/storage/db';
 import { nextId } from '@/utils';
 import { getStepAction } from '@/utils/course';
 import { FeatureSelector } from '@/components/course/FeatureSelector';
 import { RegionActionBar } from '@/components/course/RegionActionBar';
 import { StepScreenshotUpload } from '@/components/course/StepScreenshotUpload';
-import { AudioRecorderPanel } from '@/components/course/AudioRecorderPanel';
+// Voice recording / upload is switched off for now.
+// import { AudioRecorderPanel } from '@/components/course/AudioRecorderPanel';
 import { DescriptionField } from '@/components/course/DescriptionField';
 import { useToast } from '@/hooks/useToast';
+import { Tooltip } from '@/components/ui/Tooltip';
 
 /** @typedef {import('@/types').Step} Step */
 
@@ -73,7 +75,6 @@ export function StepEditPanel({
 }) {
   const { notify } = useToast();
   const [drawMode, setDrawMode] = useState(false);
-  const hasVoice = !!step.audioId;
 
   const handleImageFile = async (file) => {
     if (!file.type.startsWith('image/')) {
@@ -99,20 +100,21 @@ export function StepEditPanel({
     input.click();
   };
 
-  const voice = (
-    <AudioRecorderPanel
-      key={step.id}
-      step={step}
-      manageMedia={false}
-      compact
-      onSave={(audioId) => {
-        onMediaCreated(audioId);
-        onChange({ audioId });
-      }}
-      onDelete={() => onChange({ audioId: null })}
-      onTranscribed={(text) => onChange({ text, audioId: null })}
-    />
-  );
+  // Voice recording / upload — switched off for now.
+  // const voice = (
+  //   <AudioRecorderPanel
+  //     key={step.id}
+  //     step={step}
+  //     manageMedia={false}
+  //     compact
+  //     onSave={(audioId) => {
+  //       onMediaCreated(audioId);
+  //       onChange({ audioId });
+  //     }}
+  //     onDelete={() => onChange({ audioId: null })}
+  //     onTranscribed={(text) => onChange({ text, audioId: null })}
+  //   />
+  // );
   const text = (
     <DescriptionField
       value={step.text}
@@ -136,78 +138,46 @@ export function StepEditPanel({
             type="text"
             value={step.label}
             onChange={(e) => onChange({ label: e.target.value })}
-            placeholder={`Step ${index + 1}`}
+            placeholder="Title (optional)"
             className="w-full bg-transparent outline-none text-sm font-semibold text-ink dark:text-white border-b border-transparent focus:border-accent"
-            aria-label="Step label"
+            aria-label="Step heading"
           />
-          <p className="flex items-center gap-2 text-[11px] text-ink-faint dark:text-ink-faint-dark">
-            <span>
-              Step {index + 1} of {total}
-              {timeLabel ? ` · starts at ${timeLabel}` : ''}
-            </span>
-            {hasVoice ? (
-              <span className="px-1.5 py-px rounded-full font-semibold bg-teal/15 text-teal dark:text-teal-dark">
-                Your voice
-              </span>
-            ) : step.text?.trim() ? (
-              <span className="px-1.5 py-px rounded-full font-semibold bg-violet/15 text-violet dark:text-violet-dark">
-                Text · AI voice
-              </span>
-            ) : (
-              <span className="px-1.5 py-px rounded-full font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                Nothing to say yet
-              </span>
-            )}
+          <p className="text-[11px] text-ink-faint dark:text-ink-faint-dark">
+            Step {index + 1} of {total}
+            {timeLabel ? ` · ${timeLabel}` : ''}
           </p>
         </div>
-        <button
-          onClick={onClose}
-          className="w-8 h-8 rounded-lg flex items-center justify-center text-ink-faint hover:bg-paper-2 dark:hover:bg-paper-2-dark"
-          aria-label="Close edit panel"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <Tooltip label="Close">
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-ink-faint hover:bg-paper-2 dark:hover:bg-paper-2-dark"
+            aria-label="Close edit panel"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        {/* 1. What's said */}
+        {/* 1. What's said (voice recording / upload switched off for now) */}
         <section>
-          {hasVoice ? (
-            <>
-              <p className={SECTION_TITLE}>
-                <Mic className="w-3.5 h-3.5" /> Your voice for this step
-              </p>
-              {voice}
-              <p className={`${SECTION_TITLE} mt-5`}>
-                <Type className="w-3.5 h-3.5" /> Caption on screen
-              </p>
-              {text}
-            </>
-          ) : (
-            <>
-              <p className={SECTION_TITLE}>
-                <Type className="w-3.5 h-3.5" /> What&apos;s said
-              </p>
-              {text}
-              <p className="mt-3 mb-1.5 text-xs text-ink-faint dark:text-ink-faint-dark">
-                Or use your own voice:
-              </p>
-              {voice}
-            </>
-          )}
+          <p className={SECTION_TITLE}>What to say</p>
+          {text}
         </section>
 
         {/* 2. Highlighted area */}
         <section>
           <div className="flex items-center justify-between">
-            <p className={SECTION_TITLE}>Highlighted area</p>
+            <p className={SECTION_TITLE}>Highlight</p>
             {imageId && (
-              <button
-                onClick={pickImage}
-                className="flex items-center gap-1 mb-2 text-xs font-medium text-ink-soft dark:text-ink-faint-dark hover:text-accent"
-              >
-                <Upload className="w-3.5 h-3.5" /> Replace screenshot
-              </button>
+              <Tooltip label="Replace this screenshot">
+                <button
+                  onClick={pickImage}
+                  className="flex items-center gap-1 mb-2 text-xs font-medium text-ink-soft dark:text-ink-faint-dark hover:text-accent"
+                >
+                  <Upload className="w-3.5 h-3.5" /> Replace
+                </button>
+              </Tooltip>
             )}
           </div>
           {!imageId ? (
@@ -239,6 +209,8 @@ export function StepEditPanel({
                 onStartSelect={() => setDrawMode(true)}
                 onCancelSelect={() => setDrawMode(false)}
                 onActionChange={(action) => onChange({ action })}
+                typeValue={step.typeValue || ''}
+                onTypeValueChange={(typeValue) => onChange({ typeValue })}
                 compact
               />
             </div>
@@ -249,27 +221,33 @@ export function StepEditPanel({
         <section className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-3 border-t border-line dark:border-line-dark">
           {canAdd && (
             <>
-              <button
-                onClick={onAddBefore}
-                className="flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline"
-              >
-                <Plus className="w-4 h-4" /> Add step before
-              </button>
-              <button
-                onClick={onAddAfter}
-                className="flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline"
-              >
-                <Plus className="w-4 h-4" /> Add step after
-              </button>
+              <Tooltip label="Add a new step before this one">
+                <button
+                  onClick={onAddBefore}
+                  className="flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline"
+                >
+                  <Plus className="w-4 h-4" /> Before
+                </button>
+              </Tooltip>
+              <Tooltip label="Add a new step after this one">
+                <button
+                  onClick={onAddAfter}
+                  className="flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline"
+                >
+                  <Plus className="w-4 h-4" /> After
+                </button>
+              </Tooltip>
             </>
           )}
           {canDelete && (
-            <button
-              onClick={onDelete}
-              className="flex items-center gap-1.5 text-sm font-medium text-danger hover:underline"
-            >
-              <Trash2 className="w-4 h-4" /> Delete step
-            </button>
+            <Tooltip label="Delete this step">
+              <button
+                onClick={onDelete}
+                className="flex items-center gap-1.5 text-sm font-medium text-danger hover:underline"
+              >
+                <Trash2 className="w-4 h-4" /> Delete
+              </button>
+            </Tooltip>
           )}
         </section>
       </div>

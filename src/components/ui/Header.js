@@ -5,11 +5,12 @@
  * The toggle opens/closes the course sidebar (components/layout/Sidebar.js);
  * the open/closed default per page is decided by Layout in AppRouter.
  * The centre stays empty on purpose — toasts appear there (ui/Toast.js).
- * Not rendered on shared links (/s/...) or embeds (/embed/...).
+ * Not rendered on shared links (/s/...) or embeds (/e/..., older /embed/...).
  */
 
 import { useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { Mic, Plus, PanelLeftOpen, PanelLeftClose, LibraryBig, Settings } from 'lucide-react';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { SettingsDialog } from '@/components/ui/SettingsDialog';
@@ -62,13 +63,24 @@ export function Header({ sidebarOpen, onToggleSidebar }) {
             <LibraryBig className="w-4 h-4" />
             <span className="hidden sm:inline">Courses</span>
           </NavLink>
-          <Link
-            to="/new"
-            className="flex items-center gap-1.5 px-3.5 h-9 rounded-lg bg-accent text-white text-sm font-semibold hover:bg-accent-dark shadow-glow transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">New course</span>
-          </Link>
+          <Tooltip label="Record your screen and turn it into a walkthrough" side="bottom">
+            <Link
+              to="/new?mode=video"
+              className="flex items-center gap-1.5 px-3.5 h-9 rounded-lg border border-line dark:border-line-dark bg-panel dark:bg-panel-dark text-sm font-semibold text-ink dark:text-ink-soft-dark hover:border-accent hover:text-accent transition-colors"
+            >
+              <span className="w-2.5 h-2.5 rounded-full bg-danger" aria-hidden="true" />
+              <span className="hidden sm:inline">Record To Create </span>
+            </Link>
+          </Tooltip>
+          <Tooltip label="Make a walkthrough from screenshots or a video" side="bottom">
+            <Link
+              to="/new"
+              className="flex items-center gap-1.5 px-3.5 h-9 rounded-lg bg-accent text-white text-sm font-semibold hover:bg-accent-dark shadow-glow transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              <span className="hidden sm:inline">New course</span>
+            </Link>
+          </Tooltip>
           <button
             onClick={() => setSettingsOpen(true)}
             className="w-9 h-9 rounded-lg flex items-center justify-center text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"

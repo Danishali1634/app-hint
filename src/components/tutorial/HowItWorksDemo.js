@@ -59,7 +59,7 @@ export function HowItWorksDemo() {
             </div>
             <div className="absolute left-[4%] top-[15%] h-[5%] w-[26%] rounded bg-[#1f2a44]/80" />
             {/* The feature: "View graph data" button */}
-            <div className="absolute left-[66%] top-[14%] w-[22%] h-[9%] rounded-md bg-[#2563eb] flex items-center justify-center">
+            <div className="absolute left-[66%] top-[14%] w-[22%] h-[9%] rounded-md bg-[#0F766E] flex items-center justify-center">
               <span className="text-[9px] sm:text-[11px] font-semibold text-white whitespace-nowrap">
                 View graph data
               </span>
@@ -106,7 +106,7 @@ export function HowItWorksDemo() {
                   className="demo-loop demo-bar flex-1 rounded-t"
                   style={{
                     height: `${h}%`,
-                    background: i === 3 ? '#f97316' : '#635BFF',
+                    background: i === 3 ? '#f97316' : '#1570EF',
                     animationDelay: `${i * 60}ms`,
                   }}
                 />

@@ -1,5 +1,6 @@
 /**
- * @file Route #/embed/:slug/:encoded — the walkthrough ONLY, for <iframe> embeds.
+ * @file Route #/e/:encoded (older links: #/embed/:slug/:encoded) — the walkthrough ONLY,
+ * for <iframe> embeds.
  *
  * Created by "Copy embed code" (services/sharing/share.buildEmbedCode). Same
  * course data as a share link, but: no app header, no summary page, no exit

@@ -17,9 +17,11 @@
  *   #/examples/:id?        ExamplesPage        playable example walkthroughs
  *   #/new                  NewCoursePage       create a draft course
  *   #/editor/:courseId     CourseEditorPage    screenshot, steps, regions, voice
+ *   #/video/:courseId      VideoTourPage       record / upload a video, add steps from it
  *   #/preview/:courseId    CoursePreviewPage   summary + full walkthrough playback
- *   #/s/:slug/:encoded     SharedCoursePage    play a course embedded in the URL
- *   #/embed/:slug/:encoded EmbedPage           player only, for <iframe> embeds
+ *   #/s/:encoded           SharedCoursePage    play a course embedded in the URL
+ *   #/e/:encoded           EmbedPage           player only, for <iframe> embeds
+ *   (#/s/:slug/:encoded and #/embed/:slug/:encoded: older links, still work)
  *                                              (WATCH-ONLY: inside an iframe no other
  *                                              page is shown — see EmbedOnlyNotice)
  *   anything else          → redirect to #/
@@ -63,6 +65,9 @@ const NewCoursePage = lazy(() =>
 const CourseEditorPage = lazy(() =>
   import('@/pages/CourseEditor/CourseEditorPage').then((m) => ({ default: m.CourseEditorPage })),
 );
+const VideoTourPage = lazy(() =>
+  import('@/pages/VideoTour/VideoTourPage').then((m) => ({ default: m.VideoTourPage })),
+);
 const CoursePreviewPage = lazy(() =>
   import('@/pages/CoursePreview/CoursePreviewPage').then((m) => ({ default: m.CoursePreviewPage })),
 );
@@ -71,7 +76,8 @@ const SharedCoursePage = lazy(() =>
 );
 
 /** Pages where the sidebar starts OPEN (creating / editing a course). */
-const SIDEBAR_OPEN_BY_DEFAULT = [/^\/new$/, /^\/editor\//];
+// Not the editor: its screenshot workspace needs the width (the toggle still opens it).
+const SIDEBAR_OPEN_BY_DEFAULT = [/^\/new$/];
 /** Below this width the sidebar is an overlay drawer, so it always starts closed. */
 const DESKTOP_QUERY = '(min-width: 1024px)';
 
@@ -83,8 +89,8 @@ function sidebarDefault(pathname) {
 
 /**
  * Authoring layout (ChatGPT-style): toggleable course sidebar + page.
- * The sidebar is CLOSED by default and OPEN by default while creating/editing
- * a course (large screens). The toggle overrides that until the next page;
+ * The sidebar is CLOSED by default and OPEN by default on the New course page
+ * (large screens); the editor keeps it closed so the screenshot gets the width. The toggle overrides that until the next page;
  * each navigation re-applies the new page's default.
  */
 function Layout({ children }) {
@@ -122,7 +128,8 @@ function EmbedOnlyNotice() {
 function AppRoutes() {
   const location = useLocation();
   const isSharedLink = location.pathname.startsWith('/s/');
-  const isEmbed = location.pathname.startsWith('/embed/');
+  // "/e/…" = current embed links, "/embed/<slug>/…" = older ones (still work).
+  const isEmbed = location.pathname.startsWith('/e/') || location.pathname.startsWith('/embed/');
   // Inside someone else's page (an <iframe>)?
   const inIframe = window.self !== window.top;
 
@@ -131,6 +138,7 @@ function AppRoutes() {
     return (
       <Suspense fallback={<PageSpinner />}>
         <Routes>
+          <Route path="/e/:encoded" element={<EmbedPage />} />
           <Route path="/embed/:slug/:encoded" element={<EmbedPage />} />
           <Route path="*" element={<EmbedOnlyNotice />} />
         </Routes>
@@ -147,6 +155,7 @@ function AppRoutes() {
     return (
       <Suspense fallback={<PageSpinner />}>
         <Routes>
+          <Route path="/s/:encoded" element={<SharedCoursePage />} />
           <Route path="/s/:slug/:encoded" element={<SharedCoursePage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -163,6 +172,7 @@ function AppRoutes() {
         <Route path="/examples/:exampleId" element={<ExamplesPage />} />
         <Route path="/new" element={<NewCoursePage />} />
         <Route path="/editor/:courseId" element={<CourseEditorPage />} />
+        <Route path="/video/:courseId" element={<VideoTourPage />} />
         <Route path="/preview/:courseId" element={<CoursePreviewPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

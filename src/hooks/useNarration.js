@@ -27,7 +27,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createHinglishTTS, isTTSSupported } from '@/services/audio/tts';
+import { AI_VOICE_WAIT_MS, canSpeakText, createHinglishTTS } from '@/services/audio/tts';
+import { isAiVoiceSupported, prefetchAiVoice } from '@/services/audio/neuralVoice';
 
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
 
@@ -53,10 +54,34 @@ function textFromOffset(text, offsetMs) {
   return sentences[sentences.length - 1].trim();
 }
 
+/** Wait this long after the texts stop changing (e.g. while typing in the editor). */
+const PREFETCH_DELAY_MS = 1200;
+
+/**
+ * Prepares the AI voice for every text step in the background, so narration
+ * starts immediately (and the video later reuses the same audio).
+ * @param {WalkthroughStep[]} steps
+ */
+export function useAiVoicePrefetch(steps) {
+  const texts = steps.filter((s) => !s.audioData && s.text?.trim()).map((s) => s.text);
+  const key = texts.join('\u0000');
+  useEffect(() => {
+    if (!key || !isAiVoiceSupported()) return;
+    let cancel = () => {};
+    const timer = setTimeout(() => {
+      cancel = prefetchAiVoice(key.split('\u0000'));
+    }, PREFETCH_DELAY_MS);
+    return () => {
+      clearTimeout(timer);
+      cancel();
+    };
+  }, [key]);
+}
+
 /** True if this step has anything to say (and the browser can say it). */
 export function hasNarration(step) {
   if (!step) return false;
-  return !!step.audioData || (!!step.text?.trim() && isTTSSupported());
+  return !!step.audioData || (!!step.text?.trim() && canSpeakText());
 }
 
 /**
@@ -119,6 +144,20 @@ export function useNarration() {
         onEnd();
       };
 
+      /** Text-to-speech (also used when a recording can't be played here). */
+      const speakText = () => {
+        setMode('tts');
+        // Timeline seek: speech can't start mid-word, so start from the sentence
+        // that would be playing at that moment.
+        const text = offsetMs > 0 ? textFromOffset(step.text, offsetMs) : step.text;
+        // + the time the AI voice may need to get ready (it falls back to the
+        // browser voice after AI_VOICE_WAIT_MS).
+        ttsFallbackRef.current = { finish, ms: AI_VOICE_WAIT_MS + estimateSpeechMs(text) };
+        armTtsTimer();
+        ttsRef.current.speak(text, finish);
+      };
+      const canSpeak = !!step.text?.trim() && canSpeakText();
+
       // 1. Recorded voice has priority.
       if (step.audioData) {
         setMode('recorded');
@@ -133,23 +172,32 @@ export function useNarration() {
           }));
         audio.ontimeupdate = () => setProgress((p) => ({ ...p, current: audio.currentTime }));
         audio.onended = finish;
-        audio.onerror = finish; // a broken recording must not freeze the walkthrough
-        // Autoplay policy can reject play() until the user has interacted.
-        audio.play().catch(() => {
-          if (tokenRef.current === token) onBlocked?.();
+        // A recording this browser can't decode (or a broken one) must not
+        // freeze the walkthrough: read the text with the AI voice instead,
+        // or move on when there is no text.
+        let failedOver = false;
+        const recordingFailed = () => {
+          if (failedOver || finished || tokenRef.current !== token) return;
+          failedOver = true;
+          audio.onended = audio.onerror = audio.ontimeupdate = null;
+          audio.pause();
+          if (audioRef.current === audio) audioRef.current = null;
+          if (canSpeak) speakText();
+          else finish();
+        };
+        audio.onerror = recordingFailed;
+        audio.play().catch((err) => {
+          if (tokenRef.current !== token) return;
+          // Autoplay policy can reject play() until the user has interacted.
+          if (err?.name === 'NotAllowedError') onBlocked?.();
+          else if (err?.name !== 'AbortError') recordingFailed();
         });
         return;
       }
 
       // 2. Text-to-speech fallback.
-      if (step.text?.trim() && isTTSSupported()) {
-        setMode('tts');
-        // Timeline seek: speech can't start mid-word, so start from the sentence
-        // that would be playing at that moment.
-        const text = offsetMs > 0 ? textFromOffset(step.text, offsetMs) : step.text;
-        ttsFallbackRef.current = { finish, ms: estimateSpeechMs(text) };
-        armTtsTimer();
-        ttsRef.current.speak(text, finish);
+      if (canSpeak) {
+        speakText();
         return;
       }
 

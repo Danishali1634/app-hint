@@ -223,7 +223,12 @@ export async function deleteCourse(id) {
   const db = await getDB();
   const course = await db.get(STORE_COURSES, id);
   if (course) {
-    for (const mediaId of collectMediaIds(course)) {
+    // Everything the course owns: screenshots, voices, the recorded video and
+    // the pictures of an unsaved video draft — nothing is left behind.
+    const ids = new Set(collectMediaIds(course));
+    if (course.sourceVideoId) ids.add(course.sourceVideoId);
+    for (const step of course.videoDraftSteps || []) if (step.imageId) ids.add(step.imageId);
+    for (const mediaId of ids) {
       await db.delete(STORE_MEDIA, mediaId);
     }
   }
@@ -307,6 +312,7 @@ export async function duplicateCourse(courseId) {
     title: await makeUniqueTitle(`${original.title} (copy)`),
     status: 'draft',
     baseImageId: remap(original.baseImageId),
+    ...(original.gallery ? { gallery: original.gallery.map(remap) } : {}),
     steps: newSteps,
     createdAt: Date.now(),
     updatedAt: Date.now(),

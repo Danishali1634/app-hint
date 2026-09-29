@@ -13,12 +13,13 @@
  *   and a Copy button is shown instead, so the user is never stuck.
  *
  * COPY EMBED CODE
- *   Same course data as the link, but pointing at #/embed (player only) and
+ *   Same course data as the link, but pointing at #/e (player only) and
  *   wrapped in a responsive YouTube-style <iframe> snippet.
  *
  * DOWNLOAD VIDEO
- *   buildWalkthroughSteps → exportWalkthroughVideo (real-time canvas recording)
- *   → downloadBlob. A progress overlay with Cancel is shown meanwhile.
+ *   quality dialog (Full HD 1080p; the Fast 480p option is disabled for now)
+ *   → buildWalkthroughSteps → exportWalkthroughVideo (WebCodecs encode, usually
+ *   seconds) → downloadBlob. A progress overlay with Cancel is shown meanwhile.
  */
 
 import { useCallback, useRef, useState } from 'react';
@@ -34,6 +35,25 @@ import { downloadBlob, slug } from '@/utils';
 import { useToast } from '@/hooks/useToast';
 import { ShareLinkModal } from '@/components/course/ShareLinkModal';
 import { VideoExportOverlay } from '@/components/course/VideoExportOverlay';
+import { VideoQualityDialog } from '@/components/course/VideoQualityDialog';
+
+const QUALITY_KEY = 'videoQuality';
+// "Fast" (480p) is disabled for now, so every download is HD. Kept for later:
+// const readQuality = () => {
+//   try {
+//     return localStorage.getItem(QUALITY_KEY) === 'fast' ? 'fast' : 'hd';
+//   } catch {
+//     return 'hd';
+//   }
+// };
+const readQuality = () => 'hd';
+const saveQuality = (quality) => {
+  try {
+    localStorage.setItem(QUALITY_KEY, quality);
+  } catch {
+    // private mode: just not remembered
+  }
+};
 
 /** @typedef {import('@/types').Course} Course */
 
@@ -43,6 +63,7 @@ export function useCourseSharing() {
   const [fallbackEmbed, setFallbackEmbed] = useState(null);
   const [linkBusy, setLinkBusy] = useState(false);
   const [video, setVideo] = useState(null); // { title, progress } while exporting
+  const [qualityFor, setQualityFor] = useState(null); // course whose video quality is being picked
   const abortRef = useRef(null);
 
   /** Builds the share link and copies it. Resolves true if it was copied. */
@@ -96,14 +117,25 @@ export function useCourseSharing() {
     [notify],
   );
 
-  /** Records the walkthrough as a video and downloads it. */
+  /** Asks for the quality, then records the walkthrough as a video and downloads it. */
   const downloadVideo = useCallback(
     /** @param {Course} course */
-    async (course) => {
+    (course) => {
       if (!isVideoExportSupported()) {
         notify('Video download is not supported in this browser. Try Chrome or Edge.', 'error');
         return;
       }
+      setQualityFor(course);
+    },
+    [notify],
+  );
+
+  const recordVideo = useCallback(
+    /**
+     * @param {Course} course
+     * @param {import('@/services/video/exportVideo').VideoQuality} quality
+     */
+    async (course, quality) => {
       const controller = new AbortController();
       abortRef.current = controller;
       setVideo({ title: course.title, progress: 0, stage: 'prepare' });
@@ -111,6 +143,7 @@ export function useCourseSharing() {
         const steps = await buildWalkthroughSteps(course);
         const { blob, extension, silentSteps } = await exportWalkthroughVideo(steps, {
           title: course.title,
+          quality,
           signal: controller.signal,
           onStage: (stage, fraction = 0) =>
             setVideo((v) => (v ? { ...v, stage, progress: stage === 'voice' ? fraction : 0 } : v)),
@@ -142,6 +175,18 @@ export function useCourseSharing() {
   /** Render this once in the page that uses the hook. */
   const overlays = (
     <>
+      {qualityFor && (
+        <VideoQualityDialog
+          title={qualityFor.title}
+          initial={readQuality()}
+          onClose={() => setQualityFor(null)}
+          onChoose={(quality) => {
+            saveQuality(quality);
+            setQualityFor(null);
+            recordVideo(qualityFor, quality);
+          }}
+        />
+      )}
       {video && (
         <VideoExportOverlay
           title={video.title}

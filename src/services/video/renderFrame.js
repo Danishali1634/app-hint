@@ -13,8 +13,12 @@
  * `stage` below is the stage rectangle in canvas pixels.
  */
 
-import { OVERVIEW_VIEW, computeFocusView, focusedCenter, projectRegion } from '@/utils/camera';
-import { isClickStep } from './timeline';
+import { OVERVIEW_VIEW, projectRegion, regionCenter } from '@/utils/camera';
+import { captionAwareView, placeCaption } from '@/utils/captionPlacement';
+import { getFocusRegion, getStepTargets, getStepTitles } from '@/utils/course';
+import { formatTime } from '@/utils';
+import { OUTRO_TEXT, WALKTHROUGH_TIMING } from '@/constants';
+import { isClickStep, transitionFor } from './timeline';
 
 /** @typedef {import('./timeline').TimelineSegment} TimelineSegment */
 
@@ -22,7 +26,7 @@ import { isClickStep } from './timeline';
 const COLORS = {
   background: '#08080A',
   stageBackground: '#141418',
-  accent: '#635BFF',
+  accent: '#1570EF',
   dim: 'rgba(8, 10, 14, 0.62)',
   captionBg: 'rgba(20, 20, 24, 0.96)',
   captionBorder: '#2A2A31',
@@ -142,7 +146,7 @@ function drawRipples(ctx, x, y, elapsed) {
   const rings = [
     { delay: 0, radius: 56, width: 5, color: COLORS.accent, fill: false },
     { delay: 150, radius: 56, width: 4, color: '#ffffff', fill: false },
-    { delay: 60, radius: 32, width: 0, color: 'rgba(99,91,255,0.5)', fill: true },
+    { delay: 60, radius: 32, width: 0, color: 'rgba(21,112,239,0.5)', fill: true },
   ];
   for (const ring of rings) {
     const q = clamp01((elapsed - ring.delay) / 900);
@@ -163,20 +167,32 @@ function drawRipples(ctx, x, y, elapsed) {
   }
 }
 
-/** Caption card: number badge, label, description. Returns nothing. */
-function drawCaption(ctx, { x, y, width, stepNumber, label, text, alpha }) {
-  const pad = 18;
-  const badge = 28;
-  const textX = x + pad + badge + 12;
-  const textWidth = width - (textX - x) - pad;
+const CAPTION_PAD = 18;
+const CAPTION_BADGE = 28;
 
+/** Caption layout: wrapped lines and the card's height for a given width. */
+function layoutCaption(ctx, { width, label, text }) {
+  const textWidth = width - (CAPTION_PAD + CAPTION_BADGE + 12) - CAPTION_PAD;
   ctx.save();
-  ctx.globalAlpha = alpha;
   ctx.font = `600 17px ${FONT}`;
   const labelLines = label ? wrapText(ctx, label, textWidth, 2) : [];
   ctx.font = `400 15px ${FONT}`;
   const textLines = text ? wrapText(ctx, text, textWidth, 3) : [];
-  const height = pad * 2 + Math.max(badge, labelLines.length * 22 + textLines.length * 21);
+  ctx.restore();
+  const height =
+    CAPTION_PAD * 2 + Math.max(CAPTION_BADGE, labelLines.length * 22 + textLines.length * 21);
+  return { labelLines, textLines, height };
+}
+
+/** Caption card: number badge, label, description. Returns its height. */
+function drawCaption(ctx, { x, y, width, stepNumber, label, text, alpha }) {
+  const pad = CAPTION_PAD;
+  const badge = CAPTION_BADGE;
+  const textX = x + pad + badge + 12;
+  const { labelLines, textLines, height } = layoutCaption(ctx, { width, label, text });
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
 
   ctx.shadowColor = 'rgba(0,0,0,0.45)';
   ctx.shadowBlur = 30;
@@ -220,6 +236,104 @@ function drawCaption(ctx, { x, y, width, stepNumber, label, text, alpha }) {
   return height;
 }
 
+/** Caption card width for a stage (px). */
+const captionWidthFor = (stage) => Math.min(420, stage.w * 0.8);
+/** Where the caption may go: the whole frame between the title and the progress bar. */
+const captionBounds = (width, height) => ({ x: 16, y: 60, w: width - 32, h: height - 60 - 40 });
+const CAPTION_GAP = 18 + SPOTLIGHT_PADDING;
+
+/**
+ * A step's zoomed-in camera view: the normal focus zoom, zoomed out only as far
+ * as needed for its caption to fit beside the feature (same rule as the live
+ * player — utils/captionPlacement.captionAwareView).
+ */
+function stepFocusView(ctx, step, stage, width, height) {
+  const captionWidth = captionWidthFor(stage);
+  const { height: captionHeight } = layoutCaption(ctx, {
+    width: captionWidth,
+    label: step.label,
+    text: step.text,
+  });
+  const bounds = captionBounds(width, height);
+  return captionAwareView({
+    region: getFocusRegion(step),
+    stage: { w: stage.w, h: stage.h },
+    size: { w: captionWidth, h: captionHeight },
+    bounds: { ...bounds, x: bounds.x - stage.x, y: bounds.y - stage.y }, // stage at 0,0
+    gap: CAPTION_GAP,
+  });
+}
+
+/** Several targets: after gliding to the next one, the pointer presses this much later
+ *  (same as the live player). */
+const PRESS_AFTER_GLIDE_MS = 320;
+
+/** Typing speed for 'type' steps (same values as the live player's TypingField). */
+const TYPE_CHAR_MS = 75;
+const TYPE_MAX_MS = 2200;
+
+/**
+ * 'type' steps: a filled field inside the area with the typed value and a
+ * blinking caret; without a value, a caret and three "typing" dots.
+ * Long values keep their end visible, like a real input.
+ */
+function drawTypingField(ctx, { box: area, value, time, alpha }) {
+  const fontSize = Math.max(11, Math.min(20, area.h * 0.45));
+  const padX = fontSize * 0.5;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = `500 ${fontSize}px ${FONT}`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  const textW = value ? ctx.measureText(value).width : 0;
+  const dotsW = value ? 0 : fontSize * 1.5;
+  // Same rule as the live player (WalkthroughStage TypingField): a small box
+  // (an input field) is filled; a bigger area only gets a compact typing pill
+  // in its middle, so what is highlighted stays visible.
+  const fills = area.h <= fontSize * 2.4;
+  const pillW = Math.min(area.w * 0.9, Math.max(fontSize * 6, textW + dotsW + padX * 2 + 4));
+  const pillH = Math.min(area.h, fontSize * 2);
+  const box = fills
+    ? area
+    : {
+        x: area.x + (area.w - pillW) / 2,
+        y: area.y + (area.h - pillH) / 2,
+        w: pillW,
+        h: pillH,
+      };
+  roundRectPath(ctx, box.x, box.y, box.w, box.h, 6);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+  ctx.fill();
+  ctx.clip();
+
+  const midY = box.y + box.h / 2;
+  // Scroll left once the text is wider than the field.
+  const startX = Math.min(box.x + padX, box.x + box.w - padX - 3 - textW - dotsW);
+  if (value) {
+    ctx.fillStyle = '#111827';
+    ctx.fillText(value, startX, midY);
+  } else {
+    for (let n = 0; n < 3; n++) {
+      const bounce = Math.max(0, Math.sin(((time - n * 160) / 960) * Math.PI * 2));
+      ctx.beginPath();
+      ctx.arc(
+        startX + n * fontSize * 0.5 + fontSize * 0.18,
+        midY - bounce * fontSize * 0.12,
+        fontSize * 0.17,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fillStyle = `rgba(107, 114, 128, ${0.45 + 0.55 * bounce})`;
+      ctx.fill();
+    }
+  }
+  if (Math.floor(time / 530) % 2 === 0) {
+    ctx.fillStyle = COLORS.accent;
+    ctx.fillRect(startX + textW + dotsW + 1, midY - fontSize * 0.575, 2, fontSize * 1.15);
+  }
+  ctx.restore();
+}
+
 // ─── Frame ───────────────────────────────────────────────────────────────────
 
 /**
@@ -245,8 +359,15 @@ function drawCaption(ctx, { x, y, width, stepNumber, label, text, alpha }) {
 export function renderFrame(ctx, frame) {
   const { width, height, title, steps, images, segment, elapsed, time, total } = frame;
   const i = segment.stepIndex;
+  const starts = frame.segments ? stepStarts(frame.segments, steps.length) : null;
+  // STEPS PANEL — disabled for now (kept for later): the downloaded video shows
+  // only the walkthrough, full width. To bring the panel back, restore this line
+  // and the drawStepsPanel call below.
+  // Steps panel on the right (like the player's); the picture gets the rest.
+  // const panelX = steps.length > 1 && starts ? width - PANEL.margin - PANEL.w : width;
+  const panelX = width;
 
-  // Background + title + one continuous progress bar (no "Step x / y": it is one video).
+  // Background + title + one continuous progress bar, divided per step.
   ctx.fillStyle = COLORS.background;
   ctx.fillRect(0, 0, width, height);
   ctx.font = `600 18px ${FONT}`;
@@ -254,11 +375,11 @@ export function renderFrame(ctx, frame) {
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillText(title, 40, 34);
-  drawProgressBar(ctx, width, height, total ? time / total : 0);
+  drawProgressBar(ctx, width, height, time, total, starts);
 
   const layer = (index, phase, layerElapsed, extra = {}) =>
     drawStep(ctx, {
-      width,
+      width: panelX,
       height,
       step: steps[index],
       prev: steps[index - 1] || null,
@@ -274,10 +395,17 @@ export function renderFrame(ctx, frame) {
 
   // The previous screen leaves underneath the new one.
   if (segment.phase === 'enter' && i > 0) layer(i - 1, 'exit', elapsed);
+  const swapping = transitionFor(steps, i) === 'swap';
+  const stepStart = frame.segments?.find((s) => s.stepIndex === i)?.start ?? segment.start;
   layer(i, segment.phase, elapsed, {
     enterOrigin: segment.enterOrigin,
     continued: !!segment.continued,
+    ...(swapping ? { fadeFrom: images[steps[i - 1].id], fadeElapsed: time - stepStart } : {}),
   });
+  // STEPS PANEL — disabled for now (kept for later), see panelX above.
+  // if (panelX < width) {
+  //   drawStepsPanel(ctx, { x: panelX, height, steps, images, index: i, time, starts, total });
+  // }
   // Ending: a warm "you're all set" card over the last frame.
   if (segment.phase === 'done' && elapsed > OUTRO_DELAY_MS) {
     drawOutro(ctx, width, height, elapsed - OUTRO_DELAY_MS, title, steps.length);
@@ -318,7 +446,7 @@ function drawOutro(ctx, width, height, t, title, stepCount) {
   const pop = easeOut(within(t - 150, 500));
   const r = 54 * (0.6 + 0.4 * pop);
   ctx.globalAlpha = fade;
-  ctx.shadowColor = 'rgba(99, 91, 255, 0.8)';
+  ctx.shadowColor = 'rgba(21, 112, 239, 0.8)';
   ctx.shadowBlur = 40;
   ctx.fillStyle = COLORS.accent;
   ctx.beginPath();
@@ -360,20 +488,16 @@ function drawOutro(ctx, width, height, t, title, stepCount) {
   ctx.textBaseline = 'middle';
   ctx.fillStyle = '#FFFFFF';
   ctx.font = `700 40px ${FONT}`;
-  ctx.fillText("You're all set!", cx, cy + 110 + 14 * (1 - textIn));
+  ctx.fillText(OUTRO_TEXT.heading, cx, cy + 110 + 14 * (1 - textIn));
   ctx.font = `500 20px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.78)';
-  const learned = wrapText(ctx, `Now you know: ${title}`, width - 240, 2);
+  const learned = wrapText(ctx, OUTRO_TEXT.learned(title), width - 240, 2);
   learned.forEach((line, n) => ctx.fillText(line, cx, cy + 160 + n * 28 + 10 * (1 - textIn)));
   const tagIn = easeOut(within(t - 1300, 700));
   ctx.globalAlpha = fade * tagIn;
   ctx.font = `500 15px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.55)';
-  ctx.fillText(
-    `${stepCount} step${stepCount === 1 ? '' : 's'} · Happy working! 🎉`,
-    cx,
-    cy + 170 + learned.length * 28 + 18,
-  );
+  ctx.fillText(OUTRO_TEXT.tagline(stepCount), cx, cy + 170 + learned.length * 28 + 18);
   ctx.restore();
 }
 
@@ -410,13 +534,31 @@ function drawStep(ctx, layer) {
     h: stageH,
   };
 
-  const region = step.region;
+  // All targets are highlighted together; the camera frames the box around them.
+  const targets = getStepTargets(step);
+  const region = getFocusRegion(step);
   const isClick = isClickStep(step);
-  const focusView = region ? computeFocusView(region) : OVERVIEW_VIEW;
-  const clickPoint = region ? focusedCenter(region) : null;
+  const focusView = region ? stepFocusView(ctx, step, stage, width, height) : OVERVIEW_VIEW;
+  // The pointer clicks every target in turn: one press per WALKTHROUGH_TIMING.clickAction.
+  const clickPoints = targets.map((t) => regionCenter(projectRegion(t, focusView)));
+  const lastClick = Math.max(0, clickPoints.length - 1);
+  const clickIndex =
+    phase === 'action'
+      ? Math.min(lastClick, Math.floor(elapsed / WALKTHROUGH_TIMING.clickAction))
+      : phase === 'exit' || phase === 'done'
+        ? lastClick
+        : 0;
+  const clickPoint = clickPoints[clickIndex] ?? null;
+  // ms since the current press began (presses after the first wait for the glide)
+  const pressDelay = clickIndex > 0 ? PRESS_AFTER_GLIDE_MS : 0;
+  const pressElapsed = elapsed - clickIndex * WALKTHROUGH_TIMING.clickAction - pressDelay;
 
   // Camera view + spotlight strength for this phase.
-  const prevView = prev?.region ? computeFocusView(prev.region) : OVERVIEW_VIEW;
+  // (only used when `prev` shows the same screenshot, i.e. the same stage)
+  const prevView = getFocusRegion(prev)
+    ? stepFocusView(ctx, prev, stage, width, height)
+    : OVERVIEW_VIEW;
+  const prevSingle = getStepTargets(prev).length === 1;
   let view = OVERVIEW_VIEW;
   let spotlight = 0;
   let spotRegion = region;
@@ -426,7 +568,8 @@ function drawStep(ctx, layer) {
       const e = easeInOut(within(elapsed, 1000));
       view = lerpView(prevView, focusView, e);
       spotlight = prev?.region ? 1 : within(elapsed, 600);
-      spotRegion = prev?.region ? lerpRegion(prev.region, region, e) : region;
+      // One target → one target: the hole glides; otherwise the holes move with the camera.
+      spotRegion = prevSingle && targets.length === 1 ? lerpRegion(prev.region, region, e) : region;
     } else if (phase === 'focus') {
       const e = easeInOut(within(elapsed, 1000));
       view = lerpView(OVERVIEW_VIEW, focusView, e);
@@ -472,8 +615,9 @@ function drawStep(ctx, layer) {
   } else if (phase === 'exit' && isClick) {
     const q = clamp01(elapsed / 500);
     const e = q * q * q;
-    const ox = stage.x + (clickPoint.x / 100) * stage.w;
-    const oy = stage.y + (clickPoint.y / 100) * stage.h;
+    // Dive into the LAST target clicked.
+    const ox = stage.x + (clickPoints[lastClick].x / 100) * stage.w;
+    const oy = stage.y + (clickPoints[lastClick].y / 100) * stage.h;
     ctx.translate(ox, oy);
     ctx.scale(lerp(1, 1.35, e), lerp(1, 1.35, e));
     ctx.translate(-ox, -oy);
@@ -489,36 +633,57 @@ function drawStep(ctx, layer) {
   ctx.fillStyle = COLORS.stageBackground;
   ctx.fill();
   ctx.clip();
-  ctx.drawImage(
-    image.img,
-    stage.x + (view.tx / 100) * stage.w,
-    stage.y + (view.ty / 100) * stage.h,
-    stage.w * view.s,
-    stage.h * view.s,
-  );
+  // Best scaling filter: screenshots are usually much larger than the stage,
+  // and the default (low) filter makes small text blurry / jagged.
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  const drawThroughCamera = (img) =>
+    ctx.drawImage(
+      img,
+      stage.x + (view.tx / 100) * stage.w,
+      stage.y + (view.ty / 100) * stage.h,
+      stage.w * view.s,
+      stage.h * view.s,
+    );
+  drawThroughCamera(image.img);
+  // Another screenshot of the same Global Step: the previous one fades out on
+  // top, through the SAME moving camera — one page changing state, no cut.
+  if (layer.fadeFrom && layer.fadeElapsed < WALKTHROUGH_TIMING.crossfade) {
+    ctx.save();
+    ctx.globalAlpha =
+      stageAlpha * (1 - easeInOut(within(layer.fadeElapsed, WALKTHROUGH_TIMING.crossfade)));
+    drawThroughCamera(layer.fadeFrom.img);
+    ctx.restore();
+  }
 
   if (region && spotlight > 0) {
-    const hole = toPixels(stage, projectRegion(spotRegion, view), SPOTLIGHT_PADDING);
+    // One hole per target (a single target keeps its gliding spotRegion).
+    const holes = (targets.length === 1 ? [spotRegion] : targets).map((t) =>
+      toPixels(stage, projectRegion(t, view), SPOTLIGHT_PADDING),
+    );
 
-    // Dim everything except the feature (even-odd fill = rectangle with a hole).
+    // Dim everything except the targets (even-odd fill = rectangle with holes).
     ctx.save();
     ctx.globalAlpha = stageAlpha * spotlight;
     ctx.beginPath();
     ctx.rect(stage.x, stage.y, stage.w, stage.h);
-    roundRectPath(ctx, hole.x, hole.y, hole.w, hole.h, 12, true);
+    for (const hole of holes) roundRectPath(ctx, hole.x, hole.y, hole.w, hole.h, 12, true);
     ctx.fillStyle = COLORS.dim;
     ctx.fill('evenodd');
 
-    // Ring: pulsing glow while explaining, flash on click.
+    // Rings: pulsing glow while explaining, flash on the target being clicked.
     const pulse = 0.5 + 0.5 * Math.sin((time / 1600) * Math.PI * 2);
-    ctx.shadowColor = 'rgba(99, 91, 255, 0.65)';
+    ctx.shadowColor = 'rgba(21, 112, 239, 0.65)';
     ctx.shadowBlur = 14 + 14 * pulse;
-    roundRectPath(ctx, hole.x, hole.y, hole.w, hole.h, 12);
     ctx.lineWidth = 3;
     ctx.strokeStyle = COLORS.accent;
-    ctx.stroke();
-    if (phase === 'action' && isClick) {
-      const q = clamp01(elapsed / 450);
+    for (const hole of holes) {
+      roundRectPath(ctx, hole.x, hole.y, hole.w, hole.h, 12);
+      ctx.stroke();
+    }
+    const hole = holes[Math.min(clickIndex, holes.length - 1)];
+    if (phase === 'action' && isClick && pressElapsed >= 0) {
+      const q = clamp01(pressElapsed / 450);
       const grow = 18 * easeOut(q);
       ctx.globalAlpha = stageAlpha * (1 - q);
       ctx.shadowColor = 'transparent';
@@ -535,6 +700,20 @@ function drawStep(ctx, layer) {
     }
     ctx.restore();
   }
+  // 'type' steps: the value is typed into the field (same as the live player).
+  if (region && step.action === 'type' && ['narrate', 'action', 'done'].includes(phase)) {
+    const value = step.typeValue || '';
+    const stepMs = value ? Math.min(TYPE_CHAR_MS, TYPE_MAX_MS / value.length) : 0;
+    const typed = phase === 'narrate' ? Math.floor(elapsed / (stepMs || 1)) : value.length;
+    for (const target of targets) {
+      drawTypingField(ctx, {
+        box: toPixels(stage, projectRegion(target, view)),
+        value: value.slice(0, Math.min(value.length, typed)),
+        time,
+        alpha: stageAlpha * (phase === 'narrate' ? easeOut(within(elapsed, 300)) : 1),
+      });
+    }
+  }
   ctx.restore(); // clip
 
   // Pointer (click steps).
@@ -544,7 +723,10 @@ function drawStep(ctx, layer) {
     let alpha = 1;
     if (cursorGlides) {
       // Pointer travels with the camera from the previous button to this one.
-      const from = isClickStep(prev) ? focusedCenter(prev.region) : CURSOR_START;
+      const prevTargets = getStepTargets(prev);
+      const from = isClickStep(prev)
+        ? regionCenter(projectRegion(prevTargets[prevTargets.length - 1], prevView))
+        : CURSOR_START;
       const e = easeInOut(within(elapsed, 1000));
       pos = { x: lerp(from.x, clickPoint.x, e), y: lerp(from.y, clickPoint.y, e) };
       alpha = isClickStep(prev) ? 1 : within(elapsed, 300);
@@ -561,29 +743,41 @@ function drawStep(ctx, layer) {
       px -= 1 + bob;
       py -= 2 + 2 * bob;
     }
-    if (phase === 'action') {
-      drawRipples(ctx, px, py, elapsed);
-      const q = clamp01(elapsed / 420);
+    if (phase === 'action' && clickIndex > 0) {
+      // Glide on from the previous target, then press.
+      const from = clickPoints[clickIndex - 1];
+      const e = easeOut(within(elapsed - clickIndex * WALKTHROUGH_TIMING.clickAction, 450));
+      px = stage.x + (lerp(from.x, clickPoint.x, e) / 100) * stage.w;
+      py = stage.y + (lerp(from.y, clickPoint.y, e) / 100) * stage.h;
+    }
+    if (phase === 'action' && pressElapsed >= 0) {
+      drawRipples(ctx, px, py, pressElapsed);
+      const q = clamp01(pressElapsed / 420);
       scale = q < 0.35 ? lerp(1, 0.78, q / 0.35) : lerp(0.78, 1, (q - 0.35) / 0.65);
     }
     drawCursor(ctx, px, py, scale, alpha * stageAlpha);
   }
 
-  // Caption, placed below the feature when there's room, else above.
+  // Caption next to the feature, never covering it (same rule as the live
+  // player: utils/captionPlacement, using the caption's real height).
   if (showCaption) {
-    const captionWidth = Math.min(420, stage.w * 0.8);
+    const captionWidth = captionWidthFor(stage);
+    const { height: captionHeight } = layoutCaption(ctx, {
+      width: captionWidth,
+      label: step.label,
+      text: step.text,
+    });
     let cx = stage.x + stage.w / 2 - captionWidth / 2;
     let cy = stage.y + stage.h - 150;
     if (region) {
-      const anchor = toPixels(stage, projectRegion(region, focusView));
-      const centerX = anchor.x + anchor.w / 2;
-      cx = Math.min(
-        stage.x + stage.w - captionWidth - 12,
-        Math.max(stage.x + 12, centerX - captionWidth / 2),
-      );
-      const spaceBelow = stage.y + stage.h - (anchor.y + anchor.h);
-      cy =
-        spaceBelow > 150 ? anchor.y + anchor.h + 18 : Math.max(stage.y + 12, anchor.y - 18 - 120);
+      const placed = placeCaption({
+        anchor: toPixels(stage, projectRegion(region, focusView)),
+        size: { w: captionWidth, h: captionHeight },
+        bounds: captionBounds(width, height),
+        gap: CAPTION_GAP,
+      });
+      cx = placed.x;
+      cy = placed.y;
     }
     const lift = phase === 'narrate' ? 10 * (1 - captionAlpha) : 0;
     drawCaption(ctx, {
@@ -599,14 +793,199 @@ function drawStep(ctx, layer) {
   ctx.restore(); // stage transform
 }
 
-function drawProgressBar(ctx, width, height, fraction) {
+/**
+ * The progress bar: one continuous fill across a segment per step (2px gaps
+ * where steps begin), like the player's timeline.
+ * @param {number[] | null} starts  ms at which each step begins
+ */
+function drawProgressBar(ctx, width, height, time, total, starts) {
   const x = 40;
   const w = width - 80;
   const y = height - 26;
-  roundRectPath(ctx, x, y - 2, w, 4, 2);
-  ctx.fillStyle = '#2A2A31';
+  const fraction = total ? clamp01(time / total) : 0;
+  const edges = starts && total ? [...starts.map((t) => t / total), 1] : [0, 1];
+  for (let k = 0; k < edges.length - 1; k++) {
+    const left = x + w * edges[k];
+    const right = x + w * edges[k + 1] - (k < edges.length - 2 ? 2 : 0);
+    if (right - left < 1) continue;
+    roundRectPath(ctx, left, y - 2, right - left, 4, 2);
+    ctx.fillStyle = '#2A2A31';
+    ctx.fill();
+    const played = Math.min(right, x + w * fraction) - left;
+    if (played <= 0) continue;
+    roundRectPath(ctx, left, y - 2, Math.max(4, played), 4, 2);
+    ctx.fillStyle = COLORS.accent;
+    ctx.fill();
+  }
+}
+
+// ─── Steps panel (same content as the player's StepList) ────────────────────
+
+const PANEL = {
+  w: 300,
+  margin: 24,
+  top: 60,
+  bottom: 48,
+  header: 40,
+  row: 68,
+  thumbW: 88,
+  thumbH: 55,
+};
+/** Readable accent on the dark panel (heading of the current step). */
+const ACCENT_TEXT = '#A5A0FF';
+
+/** ms at which each step begins, from the timeline (cached per timeline). */
+const startsCache = new WeakMap();
+function stepStarts(segments, count) {
+  let starts = startsCache.get(segments);
+  if (!starts) {
+    starts = Array.from(
+      { length: count },
+      (_, k) => segments.find((s) => s.stepIndex === k)?.start ?? 0,
+    );
+    startsCache.set(segments, starts);
+  }
+  return starts;
+}
+
+/** Step numbers + headings (cached per step list). */
+const titlesCache = new WeakMap();
+function titlesOf(steps) {
+  let titles = titlesCache.get(steps);
+  if (!titles) {
+    titles = getStepTitles(steps);
+    titlesCache.set(steps, titles);
+  }
+  return titles;
+}
+
+/** A small, pre-scaled copy of a screenshot (cover, top-aligned), made once. */
+const thumbCache = new WeakMap();
+function thumbnailOf(img) {
+  let thumb = thumbCache.get(img);
+  if (!thumb) {
+    const scale = 2; // sharp when the frame is scaled up
+    thumb = document.createElement('canvas');
+    thumb.width = PANEL.thumbW * scale;
+    thumb.height = PANEL.thumbH * scale;
+    const c = thumb.getContext('2d');
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    const cover = Math.max(thumb.width / iw, thumb.height / ih);
+    c.imageSmoothingQuality = 'high';
+    c.drawImage(img, (thumb.width - iw * cover) / 2, 0, iw * cover, ih * cover);
+    thumbCache.set(img, thumb);
+  }
+  return thumb;
+}
+
+/** One line cut to maxWidth with "…" (for a single word longer than the line). */
+function clipLine(ctx, text, maxWidth) {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  const chars = [...text];
+  while (chars.length && ctx.measureText(`${chars.join('')}…`).width > maxWidth) chars.pop();
+  return `${chars.join('').trimEnd()}…`;
+}
+
+/**
+ * The steps panel: thumbnail, heading (2 lines, then …) and "Step 4.1 · 0:08"
+ * per step; the current step highlighted and scrolled to the middle (a short
+ * glide when a step begins).
+ * Currently not drawn in the video (disabled in renderFrame, kept for later).
+ */
+// eslint-disable-next-line no-unused-vars
+function drawStepsPanel(ctx, { x, height, steps, images, index, time, starts }) {
+  const titles = titlesOf(steps);
+  const y = PANEL.top;
+  const w = PANEL.w;
+  const h = height - PANEL.top - PANEL.bottom;
+
+  ctx.save();
+  roundRectPath(ctx, x, y, w, h, 14);
+  ctx.fillStyle = COLORS.stageBackground;
   ctx.fill();
-  roundRectPath(ctx, x, y - 2, Math.max(4, w * clamp01(fraction)), 4, 2);
-  ctx.fillStyle = COLORS.accent;
-  ctx.fill();
+  ctx.strokeStyle = COLORS.captionBorder;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Header
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.font = `600 14px ${FONT}`;
+  ctx.fillStyle = COLORS.textStrong;
+  ctx.fillText('Steps', x + 16, y + PANEL.header / 2);
+  const labelWidth = ctx.measureText('Steps ').width;
+  ctx.font = `400 14px ${FONT}`;
+  ctx.fillStyle = COLORS.textFaint;
+  ctx.fillText(String(steps.length), x + 16 + labelWidth, y + PANEL.header / 2);
+  ctx.fillStyle = COLORS.captionBorder;
+  ctx.fillRect(x, y + PANEL.header, w, 1);
+
+  // List (clipped), scrolled so the current step sits in the middle.
+  const listY = y + PANEL.header + 6;
+  const listH = h - PANEL.header - 12;
+  const maxScroll = Math.max(0, steps.length * PANEL.row - listH);
+  const scrollFor = (k) =>
+    Math.max(0, Math.min(maxScroll, k * PANEL.row - (listH - PANEL.row) / 2));
+  const glide = easeInOut(within(time - starts[index], 500));
+  const scroll = lerp(scrollFor(Math.max(0, index - 1)), scrollFor(index), index > 0 ? glide : 1);
+  ctx.beginPath();
+  ctx.rect(x, listY, w, listH);
+  ctx.clip();
+
+  const textX = x + 14 + PANEL.thumbW + 12;
+  const textW = x + w - 14 - textX;
+  steps.forEach((step, k) => {
+    const rowY = listY + k * PANEL.row - scroll;
+    if (rowY + PANEL.row < listY || rowY > listY + listH) return;
+    const active = k === index;
+    const { number, heading } = titles[k];
+    if (active) {
+      roundRectPath(ctx, x + 6, rowY + 2, w - 12, PANEL.row - 4, 10);
+      ctx.fillStyle = 'rgba(21, 112, 239, 0.16)';
+      ctx.fill();
+    }
+
+    // Thumbnail
+    const tx = x + 14;
+    const ty = rowY + (PANEL.row - PANEL.thumbH) / 2;
+    ctx.save();
+    roundRectPath(ctx, tx, ty, PANEL.thumbW, PANEL.thumbH, 6);
+    ctx.fillStyle = COLORS.background;
+    ctx.fill();
+    const image = images[step.id];
+    if (image) {
+      ctx.clip();
+      ctx.drawImage(thumbnailOf(image.img), tx, ty, PANEL.thumbW, PANEL.thumbH);
+    } else {
+      ctx.font = `700 14px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = COLORS.textFaint;
+      ctx.fillText(number, tx + PANEL.thumbW / 2, ty + PANEL.thumbH / 2);
+    }
+    ctx.restore();
+    roundRectPath(ctx, tx, ty, PANEL.thumbW, PANEL.thumbH, 6);
+    ctx.strokeStyle = active ? COLORS.accent : COLORS.captionBorder;
+    ctx.lineWidth = active ? 2 : 1;
+    ctx.stroke();
+
+    // Heading (2 lines, then …) + "Step 4.1 · 0:08"
+    ctx.textAlign = 'left';
+    ctx.font = `600 13px ${FONT}`;
+    const lines = wrapText(ctx, heading || `Step ${number}`, textW, 2).map((line) =>
+      clipLine(ctx, line, textW),
+    );
+    const blockH = lines.length * 17 + 16;
+    let lineY = rowY + (PANEL.row - blockH) / 2 + 8;
+    ctx.fillStyle = active ? ACCENT_TEXT : COLORS.textStrong;
+    for (const line of lines) {
+      ctx.fillText(line, textX, lineY);
+      lineY += 17;
+    }
+    ctx.font = `400 11px ${FONT}`;
+    ctx.fillStyle = COLORS.textFaint;
+    const meta = `${heading ? `Step ${number} · ` : ''}${formatTime(starts[k])}`;
+    ctx.fillText(clipLine(ctx, meta, textW), textX, lineY + 1);
+  });
+  ctx.restore();
 }

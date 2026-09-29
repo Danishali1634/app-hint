@@ -53,13 +53,8 @@ export function useCourseLibrary() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const removed = await purgeExpiredCourses();
+      await purgeExpiredCourses();
       if (cancelled) return;
-      if (removed > 0) {
-        notify(
-          `${removed} course${removed > 1 ? 's were' : ' was'} removed after ${COURSE_RETENTION_DAYS} days without changes`,
-        );
-      }
       await reload();
     })();
     return () => {

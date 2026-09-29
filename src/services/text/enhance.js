@@ -51,7 +51,7 @@ export function polishText(text) {
 /**
  * Rewrites a step description with Claude.
  * @param {string} text
- * @param {{ apiKey: string, label?: string, pageName?: string, action?: 'click' | 'look' }} context
+ * @param {{ apiKey: string, label?: string, pageName?: string, action?: 'click' | 'look' | 'type' }} context
  * @returns {Promise<string>}
  * @throws {Error} with a user-readable message
  */
@@ -62,7 +62,13 @@ export async function improveWithClaude(text, { apiKey, label, pageName, action 
   const userMessage = [
     pageName && `Page: ${pageName}`,
     label && `Step title: ${label}`,
-    `Step type: ${action === 'look' ? 'look (the viewer just looks at this area)' : 'click (the viewer clicks this area)'}`,
+    `Step type: ${
+      action === 'look'
+        ? 'look (the viewer just looks at this area)'
+        : action === 'type'
+          ? 'type (the viewer enters a value in this field)'
+          : 'click (the viewer clicks this area)'
+    }`,
     `Text to rewrite:\n${text}`,
   ]
     .filter(Boolean)

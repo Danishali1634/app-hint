@@ -82,6 +82,19 @@ export function formatDuration(seconds) {
 }
 
 /**
+ * Milliseconds → "m:ss", or "h:mm:ss" from one hour on. The time format of the
+ * walkthrough timeline, step list and video steps panel.
+ * @param {number} ms
+ */
+export function formatTime(ms) {
+  const secs = Math.max(0, Math.round((Number.isFinite(ms) ? ms : 0) / 1000));
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const ss = String(secs % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+
+/**
  * Reads a Blob into a base64 data: URL.
  * WHY: data URLs can be put straight into <img src> / new Audio(), and — unlike
  * object URLs — can be serialised into JSON for share links.

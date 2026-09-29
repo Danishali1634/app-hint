@@ -7,10 +7,12 @@
  *   Area selected → "Reselect area" + the step's action:
  *                     👆 "Viewer clicks this"   (pointer clicks it, next screen opens from it)
  *                     👁 "Just look at this"    (zoom + spotlight only)
+ *                     ⌨ "Viewer types a value" (the value is typed into the area;
+ *                                               optional sample value input)
  *                   with a one-line preview of what the walkthrough will do.
  */
 
-import { Crosshair, MousePointerClick, Eye, X } from 'lucide-react';
+import { Crosshair, MousePointerClick, Eye, TextCursorInput, X } from 'lucide-react';
 import { MiniHint } from '@/components/tutorial/MiniHint';
 
 /** @typedef {import('@/types').StepAction} StepAction */
@@ -28,7 +30,34 @@ const ACTION_OPTIONS = [
     label: 'Just look at this',
     hint: 'In the walkthrough the camera zooms into this area and highlights it.',
   },
+  {
+    value: 'type',
+    Icon: TextCursorInput,
+    label: 'Viewer types a value',
+    hint: 'In the walkthrough the camera zooms into this field and the value is typed into it.',
+  },
 ];
+
+/** Short names for the compact tiles. */
+const COMPACT_LABELS = { click: 'Click it', look: 'Just look', type: 'Types value' };
+
+/** 'type' steps: the optional sample value the walkthrough types in. */
+function TypeValueInput({ value, onChange, compact = false }) {
+  return (
+    <label className={`block ${compact ? 'mt-2' : ''}`}>
+      <span className="block text-xs font-semibold text-ink-faint dark:text-ink-faint-dark mb-1">
+        Value to type <span className="font-normal">(optional)</span>
+      </span>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="e.g. 12345 or john@example.com — empty shows a typing animation"
+        className="w-full px-3 py-2 rounded-lg bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent transition-colors"
+      />
+    </label>
+  );
+}
 
 /**
  * @param {{
@@ -38,6 +67,8 @@ const ACTION_OPTIONS = [
  *   onStartSelect: () => void,
  *   onCancelSelect: () => void,
  *   onActionChange: (action: StepAction) => void,
+ *   typeValue?: string,                          // 'type' steps: sample value
+ *   onTypeValueChange?: (value: string) => void, // shown only for 'type' steps
  *   compact?: boolean,   // short version for the preview studio's edit panel
  * }} props
  */
@@ -48,6 +79,8 @@ export function RegionActionBar({
   onStartSelect,
   onCancelSelect,
   onActionChange,
+  typeValue = '',
+  onTypeValueChange,
   compact = false,
 }) {
   if (compact) {
@@ -59,6 +92,8 @@ export function RegionActionBar({
         onStartSelect={onStartSelect}
         onCancelSelect={onCancelSelect}
         onActionChange={onActionChange}
+        typeValue={typeValue}
+        onTypeValueChange={onTypeValueChange}
       />
     );
   }
@@ -136,6 +171,11 @@ export function RegionActionBar({
       <p className="text-xs text-ink-faint dark:text-ink-faint-dark">
         {activeOption.hint} Drag the box to move it, or a corner to resize.
       </p>
+      {action === 'type' && onTypeValueChange && (
+        <div className="max-w-md">
+          <TypeValueInput value={typeValue} onChange={onTypeValueChange} />
+        </div>
+      )}
     </div>
   );
 }
@@ -153,6 +193,8 @@ function CompactActionBar({
   onStartSelect,
   onCancelSelect,
   onActionChange,
+  typeValue,
+  onTypeValueChange,
 }) {
   if (drawMode) {
     return (
@@ -191,7 +233,7 @@ function CompactActionBar({
           <Crosshair className="w-3.5 h-3.5" /> Reselect area
         </button>
       </div>
-      <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="What happens here">
+      <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="What happens here">
         {ACTION_OPTIONS.map(({ value, Icon, label }) => {
           const active = action === value;
           return (
@@ -200,18 +242,21 @@ function CompactActionBar({
               role="radio"
               aria-checked={active}
               onClick={() => onActionChange(value)}
-              className={`flex items-center justify-center gap-2 h-12 rounded-xl border-2 text-sm font-semibold transition-colors ${
+              className={`flex items-center justify-center gap-1.5 h-12 px-1 rounded-xl border-2 text-xs sm:text-sm font-semibold transition-colors ${
                 active
                   ? 'border-accent bg-accent text-white shadow-glow'
                   : 'border-line dark:border-line-dark text-ink-soft dark:text-ink-soft-dark hover:border-accent/50'
               }`}
             >
-              <Icon className="w-5 h-5" /> {value === 'click' ? 'Click it' : 'Just look'}
+              <Icon className="w-5 h-5 flex-shrink-0" /> {COMPACT_LABELS[value]}
               <span className="sr-only">{label}</span>
             </button>
           );
         })}
       </div>
+      {action === 'type' && onTypeValueChange && (
+        <TypeValueInput value={typeValue} onChange={onTypeValueChange} compact />
+      )}
     </div>
   );
 }

@@ -38,8 +38,11 @@ export const STATUS_COLORS = {
 
 // ─── Limits ──────────────────────────────────────────────────────────────────
 
-/** Max steps per course. Enforced in the editor (StepRail hides "Add Step"). */
-export const MAX_STEPS = 10;
+/**
+ * Max steps per course. Unlimited: authors can add as many steps as they need.
+ * Set a finite number here to bring a cap back (StepRail then hides "Add Step").
+ */
+export const MAX_STEPS = Infinity;
 
 /**
  * Courses are deleted automatically when they haven't been changed for this
@@ -90,6 +93,11 @@ export const WALKTHROUGH_TIMING = {
   overviewFirst: 1200, // first step: give time to recognise the page
   overview: 450, // later steps: the screen just opened — move on quickly
   focus: 1050, // .hs-camera zoom/glide (1000ms)
+  // Another screenshot of the same screen swaps in as the camera starts to glide.
+  // Short on purpose: a long crossfade between two frames of a recording (where
+  // things moved) shows both frames at once, a ghosted double image. A quick
+  // swap looks like a real screen updating.
+  crossfade: 220,
   point: 850, // .hs-cursor glide (850ms)
   silentNarrate: 2200, // step with no voice/text: time to look
   clickAction: 750, // press + ripple, then the next screen starts opening
@@ -97,4 +105,15 @@ export const WALKTHROUGH_TIMING = {
   exitClick: 500, // .hs-stage-exit-click (overlaps the next step's enter)
   exitLook: 600, // .hs-stage-exit-fade (overlaps the next step's enter)
   doneAutoResume: 300,
+};
+
+/**
+ * The happy ending shown when a walkthrough finishes — in the live player
+ * (components/walkthrough/OutroCard) and in the downloaded video
+ * (services/video/renderFrame drawOutro). One wording for both.
+ */
+export const OUTRO_TEXT = {
+  heading: "You're all set!",
+  learned: (title) => `Now you know: ${title}`,
+  tagline: (stepCount) => `${stepCount} step${stepCount === 1 ? '' : 's'} · Happy working! 🎉`,
 };

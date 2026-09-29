@@ -77,18 +77,24 @@ export function toggleTheme() {
 
 // ─── Text-to-speech voice ────────────────────────────────────────────────────
 
-/** @typedef {{ voiceURI: string | null, rate: number }} VoiceSettings */
+/**
+ * @typedef {{ voiceURI: string | null, rate: number, aiVoiceId: string | null }} VoiceSettings
+ *   aiVoiceId  the AI voice (services/audio/neuralVoice AI_VOICES) used by the
+ *              player AND the video; null = the default AI voice
+ *   voiceURI   browser voice, only used when the AI voice can't load; null = best one
+ */
 
-/** @returns {VoiceSettings} voiceURI null = pick the best voice automatically */
+/** @returns {VoiceSettings} */
 export function getVoiceSettings() {
   try {
     const saved = JSON.parse(readKey(LS_VOICE) || '{}');
     return {
       voiceURI: typeof saved.voiceURI === 'string' ? saved.voiceURI : null,
       rate: typeof saved.rate === 'number' ? saved.rate : 1,
+      aiVoiceId: typeof saved.aiVoiceId === 'string' ? saved.aiVoiceId : null,
     };
   } catch {
-    return { voiceURI: null, rate: 1 };
+    return { voiceURI: null, rate: 1, aiVoiceId: null };
   }
 }
 

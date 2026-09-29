@@ -4,12 +4,20 @@
  * WHY: a walkthrough should feel like ONE video, not a slideshow. Instead of
  * Next / Previous buttons and step dots, the player shows a single bar that
  * fills continuously while it plays, with a time readout ("0:12 / 0:45").
- * Thin gaps mark where each step starts; hovering shows the step's name.
+ * Like a chapter-aware video bar, the ONE bar is drawn as a segment per step
+ * (width = the step's real share of the time, small gaps between them); the
+ * current step is tinted, the hovered one grows, and the hover label shows the
+ * step's name plus the exact time under the pointer.
  *
  * CLICK = GO TO THAT EXACT MOMENT (like a video), even inside the step that is
  * already playing: the click is turned into a "moment" — which step, which
  * phase of it (screen / zoom / pointer / voice / click) and how far into that
  * phase — and the player continues from there (momentAt → player.seekTo).
+ * A click right on a step boundary (within SNAP_PX) snaps to that step's start.
+ *
+ * DRAG: press anywhere and drag to scrub; the playhead and time follow the
+ * pointer and the seek happens once, on release (every seek remounts the stage
+ * and restarts the voice, so seeking on every mouse move would stutter).
  *
  * HOW THE TIME IS KNOWN: the live player waits for the voice to finish, so the
  * exact length is only known while playing. The bar uses the same phase plan
@@ -23,10 +31,14 @@
  * exactly there.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ListVideo, Plus, X } from 'lucide-react';
 import { buildTimeline } from '@/services/video/timeline';
 import { WALKTHROUGH_TIMING } from '@/constants';
+import { getStepTitles } from '@/utils/course';
+import { formatTime } from '@/utils';
+
+export { formatTime };
 
 /** Rough speaking time for text-to-speech (ms). Also used to seek inside TTS. */
 export function speakingMs(text) {
@@ -59,8 +71,16 @@ export function stepTimings(steps, voiceMs = {}) {
     span.start = Math.min(span.start, seg.start);
     span.end = Math.max(span.end, seg.start + seg.duration);
   }
-  const total = spans[spans.length - 1].end;
-  return { spans: spans.map((s) => ({ start: s.start, duration: s.end - s.start })), total };
+  // A step with no phases (shouldn't happen) becomes a zero-length span where
+  // the previous one ended, so nothing downstream sees Infinity / NaN.
+  let prevEnd = 0;
+  const safe = spans.map((s) => {
+    const start = Number.isFinite(s.start) ? s.start : prevEnd;
+    const end = Math.max(start, s.end);
+    prevEnd = end;
+    return { start, duration: end - start };
+  });
+  return { spans: safe, total: prevEnd };
 }
 
 /**
@@ -92,10 +112,10 @@ export function momentAt(steps, voiceMs, t) {
   };
 }
 
-export function formatTime(ms) {
-  const secs = Math.max(0, Math.round(ms / 1000));
-  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-}
+/** A click this close (px) to a step boundary jumps to that step's start. */
+const SNAP_PX = 6;
+/** Pointer travel (px) after which a press counts as a drag, not a click. */
+const DRAG_PX = 3;
 
 /**
  * @param {{
@@ -126,9 +146,13 @@ export function Timeline({
   className = '',
 }) {
   const { spans, total } = useMemo(() => stepTimings(steps, voiceMs), [steps, voiceMs]);
+  const titles = useMemo(() => getStepTitles(steps), [steps]);
   const [elapsed, setElapsed] = useState(0);
   const barRef = useRef(null);
-  const [hover, setHover] = useState(null); // { index, x } while the pointer is over the bar
+  const labelRef = useRef(null);
+  const pressRef = useRef(null); // { x, dragging } while a pointer is down on the bar
+  const [hover, setHover] = useState(null); // { t, x } under the pointer
+  const [scrubTime, setScrubTime] = useState(null); // ms while dragging, else null
 
   // Playhead inside the current step: real time while playing, frozen when paused.
   useEffect(() => setElapsed(startOffset), [runKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -145,24 +169,82 @@ export function Timeline({
     return () => cancelAnimationFrame(frame);
   }, [playing, runKey]);
 
+  // Keep the hover label inside the bar (its width depends on the step name).
+  useLayoutEffect(() => {
+    const label = labelRef.current;
+    const bar = barRef.current;
+    if (!label || !bar || !hover) return;
+    const half = label.offsetWidth / 2;
+    label.style.left = `${Math.max(half, Math.min(hover.x, bar.clientWidth - half))}px`;
+  });
+
   const span = spans[index];
   if (!span || total <= 0) return null;
-  const position = finished ? total : span.start + Math.min(elapsed, span.duration * 0.98);
+  const playPosition = finished ? total : span.start + Math.min(elapsed, span.duration * 0.98);
+  const position = scrubTime ?? playPosition;
   const percent = (position / total) * 100;
 
-  const timeAt = (clientX) => {
+  /** Pointer → { t: ms on the timeline, x: px from the bar's left edge }. */
+  const pointAt = (clientX) => {
     const rect = barRef.current.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * total;
+    const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+    return { t: rect.width > 0 ? (x / rect.width) * total : 0, x, width: rect.width };
   };
+  // A time exactly on a boundary belongs to the step that starts there.
   const indexAtTime = (t) => {
     const found = spans.findIndex((s) => t >= s.start && t < s.start + s.duration);
     return found === -1 ? steps.length - 1 : found;
   };
   const seekToStep = (i) => onSeek(momentAt(steps, voiceMs, spans[i].start));
+  /** A click: the exact moment — or a step's start when right on its boundary. */
+  const clickAt = ({ t, x, width }) => {
+    const i = indexAtTime(t);
+    const px = (ms) => (ms / total) * width;
+    if (Math.abs(x - px(spans[i].start)) <= SNAP_PX) return seekToStep(i);
+    const next = spans[i + 1];
+    if (next && Math.abs(x - px(next.start)) <= SNAP_PX) return seekToStep(i + 1);
+    onSeek(momentAt(steps, voiceMs, t));
+  };
 
+  const onPointerDown = (e) => {
+    if (e.button !== 0) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    pressRef.current = { x: e.clientX, dragging: false };
+  };
+  const onPointerMove = (e) => {
+    const point = pointAt(e.clientX);
+    setHover(point);
+    const press = pressRef.current;
+    if (!press) return;
+    if (!press.dragging && Math.abs(e.clientX - press.x) < DRAG_PX) return;
+    press.dragging = true;
+    setScrubTime(point.t);
+  };
+  const onPointerUp = (e) => {
+    const press = pressRef.current;
+    pressRef.current = null;
+    if (!press) return;
+    const point = pointAt(e.clientX);
+    setScrubTime(null);
+    // A drag lands on the exact time (never snaps); a plain click may snap.
+    if (press.dragging) onSeek(momentAt(steps, voiceMs, point.t));
+    else clickAt(point);
+    if (e.pointerType !== 'mouse') setHover(null);
+  };
+  const onPointerCancel = () => {
+    pressRef.current = null;
+    setScrubTime(null);
+    setHover(null);
+  };
+
+  const hoverIndex = hover ? indexAtTime(hover.t) : -1;
+  const scrubbing = scrubTime != null;
   const track = dark ? 'bg-white/25' : 'bg-line dark:bg-line-dark';
+  // Unplayed part of the current step: a faint accent, so "where am I" reads at a glance.
+  const activeTint = dark ? 'bg-white/40' : 'bg-accent/25 dark:bg-accent/30';
   const timeClass = dark ? 'text-white/75' : 'text-ink-faint dark:text-ink-faint-dark';
   const boundaries = onInsert ? [0, ...spans.slice(1).map((s) => s.start), total] : [];
+  const activeIndex = scrubbing ? indexAtTime(scrubTime) : index;
 
   return (
     <div className={`flex items-center gap-3 min-w-0 ${className}`}>
@@ -175,47 +257,90 @@ export function Timeline({
           aria-valuemin={1}
           aria-valuemax={steps.length}
           aria-valuenow={index + 1}
-          aria-valuetext={`Step ${index + 1} of ${steps.length}: ${steps[index]?.label || ''}`}
-          className="group/tl relative h-6 flex items-center cursor-pointer outline-none"
-          onClick={(e) => onSeek(momentAt(steps, voiceMs, timeAt(e.clientX)))}
-          onMouseMove={(e) => {
-            const rect = barRef.current.getBoundingClientRect();
-            setHover({ index: indexAtTime(timeAt(e.clientX)), x: e.clientX - rect.left });
-          }}
-          onMouseLeave={() => setHover(null)}
+          aria-valuetext={`Step ${titles[index]?.number}${titles[index]?.heading ? `: ${titles[index].heading}` : ''}, ${formatTime(playPosition)} of ${formatTime(total)}`}
+          className="group/tl relative h-6 flex items-center cursor-pointer outline-none touch-none select-none"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerCancel}
+          onPointerLeave={() => !pressRef.current && setHover(null)}
           onKeyDown={(e) => {
-            if (e.key === 'ArrowRight' && index < steps.length - 1) seekToStep(index + 1);
-            if (e.key === 'ArrowLeft') seekToStep(Math.max(0, index - 1));
+            const target = {
+              ArrowRight: Math.min(steps.length - 1, index + 1),
+              ArrowLeft: Math.max(0, index - 1),
+              Home: 0,
+              End: steps.length - 1,
+            }[e.key];
+            if (target == null) return;
+            e.preventDefault();
+            seekToStep(target);
           }}
         >
-          {/* Track with thin gaps where steps begin */}
-          <div
-            className={`relative w-full h-1 group-hover/tl:h-1.5 transition-[height] rounded-full overflow-hidden ${track}`}
-          >
-            <div
-              className="absolute inset-y-0 left-0 bg-accent rounded-full"
-              style={{ width: `${percent}%` }}
-            />
-            {spans.slice(1).map((s, i) => (
-              <span
-                key={steps[i + 1].id}
-                className={`absolute inset-y-0 w-0.5 ${dark ? 'bg-black/60' : 'bg-panel dark:bg-panel-dark'}`}
-                style={{ left: `${(s.start / total) * 100}%` }}
-              />
-            ))}
+          {/* ONE track, drawn as a segment per step: width = the step's share of
+              the time, a 2px gap before the next. The fill runs across all of
+              them as one continuous bar. Purely visual — the bar above handles
+              every pointer event. */}
+          <div className="relative w-full h-2 pointer-events-none">
+            {spans.map((s, i) => {
+              const left = (s.start / total) * 100;
+              const width = (s.duration / total) * 100;
+              const played = Math.max(0, Math.min(1, (position - s.start) / (s.duration || 1)));
+              const grow = i === hoverIndex || (scrubbing && i === activeIndex);
+              return (
+                <div
+                  key={steps[i].id}
+                  className={`absolute top-1/2 -translate-y-1/2 rounded-full overflow-hidden transition-[height] ${
+                    grow ? 'h-2' : 'h-1 group-hover/tl:h-1.5'
+                  } ${track}`}
+                  style={{
+                    left: `${left}%`,
+                    width: i < spans.length - 1 ? `max(0px, calc(${width}% - 2px))` : `${width}%`,
+                  }}
+                >
+                  {i === activeIndex && !finished && (
+                    <div className={`absolute inset-0 ${activeTint}`} />
+                  )}
+                  <div
+                    className="absolute inset-y-0 left-0 bg-accent"
+                    style={{ width: `${played * 100}%` }}
+                  />
+                </div>
+              );
+            })}
           </div>
-          {/* Playhead */}
+          {/* Playhead: on hover, focus and while dragging */}
           <span
-            className="absolute top-1/2 w-3 h-3 -mt-1.5 -ml-1.5 rounded-full bg-accent shadow ring-2 ring-white/80 dark:ring-black/40 scale-0 group-hover/tl:scale-100 transition-transform"
+            className={`absolute top-1/2 w-3 h-3 -mt-1.5 -ml-1.5 rounded-full bg-accent shadow ring-2 ring-white/80 dark:ring-black/40 pointer-events-none transition-transform group-hover/tl:scale-100 group-focus-visible/tl:scale-100 ${
+              scrubbing ? 'scale-110' : 'scale-0'
+            }`}
             style={{ left: `${percent}%` }}
           />
-          {/* Hover label */}
-          {hover && steps[hover.index] && (
+          {/* Hover preview (like a video's thumbnail preview): the step's
+              screen, its name and the exact time under the pointer. Follows the
+              pointer while dragging; never seeks by itself. */}
+          {hover && steps[hoverIndex] && (
             <span
-              className="absolute bottom-full mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg bg-ink text-white dark:bg-white dark:text-ink text-[11px] font-semibold px-2 py-1 shadow-lg pointer-events-none z-10"
-              style={{ left: Math.max(40, Math.min(hover.x, barRef.current.clientWidth - 40)) }}
+              ref={labelRef}
+              className="absolute bottom-full mb-2 -translate-x-1/2 flex flex-col items-center rounded-lg bg-ink text-white dark:bg-white dark:text-ink text-[11px] font-semibold p-1 shadow-lg pointer-events-none z-10"
+              style={{ left: hover.x }}
             >
-              {hover.index + 1}. {steps[hover.index].label || `Step ${hover.index + 1}`}
+              {steps[hoverIndex].imageData && (
+                <img
+                  src={steps[hoverIndex].imageData}
+                  alt=""
+                  draggable={false}
+                  className={`${dark ? 'w-32' : 'w-44'} aspect-[16/10] object-cover object-top rounded-md mb-1 bg-black/20`}
+                />
+              )}
+              <span
+                className={`px-1 ${dark ? 'w-32' : 'w-44'} text-center line-clamp-2 break-words`}
+              >
+                {titles[hoverIndex].heading || `Step ${titles[hoverIndex].number}`}
+              </span>
+              <span className="font-mono tabular-nums font-normal opacity-75 whitespace-nowrap">
+                {titles[hoverIndex].heading && `Step ${titles[hoverIndex].number} · `}
+                {formatTime(hover.t)}
+              </span>
             </span>
           )}
         </div>
@@ -250,5 +375,138 @@ export function Timeline({
         {formatTime(position)} / {formatTime(total)}
       </span>
     </div>
+  );
+}
+
+/**
+ * The Steps button of the control bar: shows / hides the StepList panel.
+ * @param {{ open: boolean, onToggle: () => void }} props
+ */
+export function StepsToggle({ open, onToggle }) {
+  return (
+    <button
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-controls="walkthrough-steps"
+      aria-label={open ? 'Hide steps' : 'Show steps'}
+      title={open ? 'Hide steps' : 'Show steps'}
+      className={`h-9 flex-shrink-0 flex items-center gap-1.5 px-2.5 rounded-lg text-xs font-semibold transition-colors ${
+        open
+          ? 'bg-accent text-white'
+          : 'text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark'
+      }`}
+    >
+      <ListVideo className="w-4 h-4" />
+      <span className="hidden sm:inline">Steps</span>
+    </button>
+  );
+}
+
+/**
+ * The steps as a panel BESIDE the video (like a video's chapter list), so the
+ * picture is never covered: thumbnail + heading + number and start time per
+ * step. Clicking one jumps the player to that step's start through the same
+ * onSeek as the timeline — playing keeps playing, paused stays paused — and the
+ * panel stays open for the next jump. The current step (`index`) is
+ * highlighted and kept scrolled into view.
+ * @param {{
+ *   steps: import('@/types').WalkthroughStep[],
+ *   index: number,
+ *   voiceMs: Record<string, number>,
+ *   onSeek: (moment: Moment) => void,
+ *   onClose?: () => void,    // shows a × (and Esc) to hide the panel
+ *   className?: string,
+ * }} props
+ */
+export function StepList({ steps, index, voiceMs, onSeek, onClose, className = '' }) {
+  const { spans, total } = useMemo(() => stepTimings(steps, voiceMs), [steps, voiceMs]);
+  const titles = useMemo(() => getStepTitles(steps), [steps]);
+  const listRef = useRef(null);
+
+  // Scroll only the list (not the page) to centre the current step.
+  useEffect(() => {
+    const list = listRef.current;
+    const item = list?.children[index];
+    if (!item) return;
+    const top = item.offsetTop - (list.clientHeight - item.offsetHeight) / 2;
+    list.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  }, [index]);
+
+  if (total <= 0) return null;
+
+  return (
+    <aside
+      id="walkthrough-steps"
+      aria-label="Steps"
+      onKeyDown={(e) => e.key === 'Escape' && onClose?.()}
+      className={`flex flex-col min-h-0 bg-panel dark:bg-panel-dark ${className}`}
+    >
+      <div className="flex items-center justify-between gap-2 px-3 h-11 flex-shrink-0 border-b border-line dark:border-line-dark">
+        <p className="text-sm font-semibold text-ink dark:text-ink-soft-dark">
+          Steps{' '}
+          <span className="font-normal text-ink-faint dark:text-ink-faint-dark">
+            {steps.length}
+          </span>
+        </p>
+      </div>
+      <ol ref={listRef} className="relative flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
+        {steps.map((s, i) => {
+          const active = i === index;
+          const { number, heading } = titles[i];
+          const time = formatTime(spans[i]?.start ?? 0);
+          return (
+            <li key={s.id}>
+              <button
+                onClick={() => onSeek(momentAt(steps, voiceMs, spans[i].start))}
+                aria-current={active ? 'step' : undefined}
+                aria-label={`Go to step ${number}${heading ? `: ${heading}` : ''} (${time})`}
+                title={heading || `Step ${number}`}
+                className={`group/step w-full flex items-start gap-2.5 p-1.5 rounded-lg text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent ${
+                  active
+                    ? 'bg-accent/10 dark:bg-accent/15'
+                    : 'hover:bg-paper-2 dark:hover:bg-paper-2-dark'
+                }`}
+              >
+                <span
+                  className={`w-24 flex-shrink-0 aspect-[16/10] rounded-md overflow-hidden border bg-paper dark:bg-paper-2-dark ${
+                    active
+                      ? 'border-accent ring-2 ring-accent'
+                      : 'border-line dark:border-line-dark'
+                  }`}
+                >
+                  {s.imageData ? (
+                    <img
+                      src={s.imageData}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      draggable={false}
+                      className="w-full h-full object-cover object-top"
+                    />
+                  ) : (
+                    <span className="w-full h-full flex items-center justify-center text-sm font-bold text-ink-faint dark:text-ink-faint-dark">
+                      {number}
+                    </span>
+                  )}
+                </span>
+                <span className="flex-1 min-w-0 pt-0.5">
+                  <span
+                    className={`block line-clamp-2 break-words text-xs leading-snug font-semibold ${
+                      active ? 'text-accent' : 'text-ink dark:text-ink-soft-dark'
+                    }`}
+                  >
+                    {heading || `Step ${number}`}
+                  </span>
+                  <span className="mt-0.5 block truncate text-[11px] font-mono tabular-nums text-ink-faint dark:text-ink-faint-dark">
+                    {heading && `Step ${number} · `}
+                    {time}
+                  </span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    </aside>
   );
 }

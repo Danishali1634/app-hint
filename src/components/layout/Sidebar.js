@@ -7,7 +7,8 @@
  *   Home · All courses · Examples
  *   Your courses, grouped by last change: Today / Yesterday / Previous 7 days /
  *   Previous 30 days / Older. Active course (open in the editor or preview) is
- *   highlighted; hover shows a ▶ Preview shortcut.
+ *   highlighted; hover shows ▶ Preview and 🗑 Delete (asks first, then removes
+ *   the course and everything it owns for good — see db.deleteCourse).
  *   theme toggle · "Saved in this browser" note
  *
  * OPEN / CLOSED (decided by Layout in AppRouter):
@@ -31,13 +32,17 @@ import {
   LibraryBig,
   Play,
   FileVideo,
-  HardDrive,
   PanelLeftClose,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { useCourseList } from '@/hooks/useCourseList';
+import { deleteCourse } from '@/services/storage/db';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { useToast } from '@/hooks/useToast';
 import { searchCourses } from '@/utils/search';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { Tooltip } from '@/components/ui/Tooltip';
 
 /** @typedef {import('@/types').Course} Course */
 
@@ -81,6 +86,18 @@ export function Sidebar({ open, onClose }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const activeId = activeCourseId(location.pathname);
+  const { notify } = useToast();
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const confirmDelete = async () => {
+    const target = deleteTarget;
+    setDeleteTarget(null); // close first, so a double-click can't delete twice
+    if (!target) return;
+    // Leave the course's pages before it disappears under them.
+    if (target.id === activeId) navigate('/');
+    await deleteCourse(target.id);
+    notify(`“${target.title}” deleted`);
+  };
 
   const visible = useMemo(() => {
     if (!query.trim()) return courses;
@@ -144,12 +161,22 @@ export function Sidebar({ open, onClose }) {
 
           {/* New course + search */}
           <div className="px-3 space-y-2 flex-shrink-0">
-            <button
-              onClick={() => go('/new')}
-              className="w-full flex items-center justify-center gap-2 h-10 rounded-xl bg-accent text-white text-sm font-semibold shadow-glow hover:bg-accent-dark transition-colors"
-            >
-              <Plus className="w-4 h-4" /> New course
-            </button>
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <button
+                onClick={() => go('/new')}
+                className="flex items-center justify-center gap-2 h-10 rounded-xl bg-accent text-white text-sm font-semibold shadow-glow hover:bg-accent-dark transition-colors"
+              >
+                <Plus className="w-4 h-4" /> New course
+              </button>
+              <Tooltip label="Record your screen and turn it into a walkthrough">
+                <button
+                  onClick={() => go('/new?mode=video')}
+                  className="flex items-center justify-center gap-2 h-10 px-3 rounded-xl border border-line dark:border-line-dark bg-panel dark:bg-panel-dark text-sm font-semibold text-ink dark:text-ink-soft-dark hover:border-accent hover:text-accent transition-colors"
+                >
+                  <span className="w-2.5 h-2.5 rounded-full bg-danger" aria-hidden="true" /> Record
+                </button>
+              </Tooltip>
+            </div>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-faint dark:text-ink-faint-dark pointer-events-none" />
               <input
@@ -205,6 +232,7 @@ export function Sidebar({ open, onClose }) {
                         active={course.id === activeId}
                         onOpen={() => go(`/editor/${course.id}`)}
                         onPreview={() => go(`/preview/${course.id}`)}
+                        onDelete={() => setDeleteTarget(course)}
                       />
                     ))}
                   </ul>
@@ -215,24 +243,32 @@ export function Sidebar({ open, onClose }) {
 
           {/* Footer */}
           <div className="flex items-center justify-between gap-2 px-4 h-14 border-t border-line dark:border-line-dark flex-shrink-0">
-            <span className="flex items-center gap-1.5 text-xs text-ink-faint dark:text-ink-faint-dark">
-              <HardDrive className="w-3.5 h-3.5" /> Saved in this browser
-            </span>
+            <span />
             <ThemeToggle />
           </div>
         </div>
       </aside>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete course"
+        message={`Delete “${deleteTarget?.title}” for good? Its screenshots, video and text are removed too. This cannot be undone.`}
+        confirmLabel="Delete"
+        danger
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </>
   );
 }
 
 /** One course row: title + page name; highlighted when active. */
-function SidebarCourse({ course, active, onOpen, onPreview }) {
+function SidebarCourse({ course, active, onOpen, onPreview, onDelete }) {
   return (
     <li className="group relative">
       <button
         onClick={onOpen}
-        className={`w-full flex items-center gap-2.5 pl-3 pr-9 py-2 rounded-lg text-left transition-colors ${
+        className={`w-full flex items-center gap-2.5 pl-3 pr-16 py-2 rounded-lg text-left transition-colors ${
           active
             ? 'bg-accent/10 dark:bg-accent/15 text-ink dark:text-white ring-1 ring-accent/30'
             : 'text-ink-soft dark:text-ink-faint-dark hover:bg-paper-2/70 dark:hover:bg-paper-2-dark/70 hover:text-ink dark:hover:text-ink-soft-dark'
@@ -251,14 +287,26 @@ function SidebarCourse({ course, active, onOpen, onPreview }) {
           )}
         </span>
       </button>
-      <button
-        onClick={onPreview}
-        className="absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md flex items-center justify-center text-ink-faint hover:text-accent hover:bg-accent/10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
-        title="Preview"
-        aria-label={`Preview ${course.title}`}
-      >
-        <Play className="w-3.5 h-3.5" />
-      </button>
+      <span className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <Tooltip label="Watch it">
+          <button
+            onClick={onPreview}
+            className="w-7 h-7 rounded-md flex items-center justify-center text-ink-faint hover:text-accent hover:bg-accent/10"
+            aria-label={`Preview ${course.title}`}
+          >
+            <Play className="w-3.5 h-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip label="Delete this course">
+          <button
+            onClick={onDelete}
+            className="w-7 h-7 rounded-md flex items-center justify-center text-ink-faint hover:text-danger hover:bg-danger/10"
+            aria-label={`Delete ${course.title}`}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </Tooltip>
+      </span>
     </li>
   );
 }

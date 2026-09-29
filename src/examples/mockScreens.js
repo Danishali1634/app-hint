@@ -17,7 +17,7 @@ export const SCREEN_H = 800;
 
 const FONT = 'font-family="Inter, Arial, sans-serif"';
 const NAVY = '#1f2a44';
-const BLUE = '#2563eb';
+const BLUE = '#1570ef';
 const LINE = '#e3e7ef';
 const GREEN = '#0e9f6e';
 
@@ -238,7 +238,7 @@ export function returnRepackGraphModal() {
     .map((v, i) => {
       const bh = (v / 100) * 340;
       const bx = RR_CHART.x + 50 + i * 105;
-      return `<rect x="${bx}" y="${RR_CHART.y + 380 - bh}" width="70" height="${bh}" rx="6" fill="${i === 3 ? '#f97316' : '#635bff'}"/>
+      return `<rect x="${bx}" y="${RR_CHART.y + 380 - bh}" width="70" height="${bh}" rx="6" fill="${i === 3 ? '#f97316' : '#1570ef'}"/>
 ${text(bx + 35, RR_CHART.y + 404, ['May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'][i], { size: 13, color: '#6b7280', anchor: 'middle' })}`;
     })
     .join('');
@@ -357,7 +357,7 @@ export function reportsPage({
   const chart = values
     .map(
       (v, i) =>
-        `<rect x="${300 + i * 130}" y="${590 - v * 3.4}" width="70" height="${v * 3.4}" rx="6" fill="${month === 'Oct' ? '#635bff' : '#93a4ff'}"/>`,
+        `<rect x="${300 + i * 130}" y="${590 - v * 3.4}" width="70" height="${v * 3.4}" rx="6" fill="${month === 'Oct' ? '#1570ef' : '#8fb8f7'}"/>`,
     )
     .join('');
   // Month picker: 3 × 2 grid; Oct is the first cell of the second row.

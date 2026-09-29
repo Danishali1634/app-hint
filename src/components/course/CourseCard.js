@@ -26,9 +26,8 @@ import {
   Pencil,
   Code2,
 } from 'lucide-react';
-import { RETENTION_WARNING_DAYS, STATUS_COLORS, STATUS_LABELS } from '@/constants';
+import { STATUS_COLORS, STATUS_LABELS } from '@/constants';
 import { formatDate } from '@/utils';
-import { getCourseExpiry } from '@/services/storage/db';
 import { useCourseThumbnail } from '@/hooks/useCourseThumbnail';
 
 /** @typedef {import('@/types').Course} Course */
@@ -88,8 +87,6 @@ export function CourseCard({
   const [menuOpen, setMenuOpen] = useState(false);
 
   const stepCount = course.steps.length;
-  const daysLeft = Math.ceil((getCourseExpiry(course) - Date.now()) / DAY_MS);
-  const expiresSoon = daysLeft <= RETENTION_WARNING_DAYS;
   const runMenu = (action) => () => {
     setMenuOpen(false);
     action();
@@ -140,13 +137,6 @@ export function CourseCard({
           </span>
           <span>Updated {formatDate(course.updatedAt)}</span>
         </div>
-        {expiresSoon && (
-          <p className="mt-2 flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400">
-            <Clock className="w-3.5 h-3.5" />
-            Auto-deletes in {Math.max(daysLeft, 0)} day{daysLeft === 1 ? '' : 's'} — edit or
-            download to keep
-          </p>
-        )}
       </div>
 
       {/* ── Actions ── */}
@@ -177,7 +167,7 @@ export function CourseCard({
         >
           <Link2 className="w-4 h-4" />
         </button>
-        <button
+        {/* <button
           onClick={onCopyEmbed}
           disabled={busy}
           className={QUICK_ACTION_CLASS}
@@ -185,7 +175,7 @@ export function CourseCard({
           aria-label="Copy embed code"
         >
           <Code2 className="w-4 h-4" />
-        </button>
+        </button> */}
 
         <div className="ml-auto flex items-center gap-1">
           <button

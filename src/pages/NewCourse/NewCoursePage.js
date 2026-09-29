@@ -1,6 +1,12 @@
 /**
  * @file Route #/new — form to create a course.
  *
+ * FIRST CHOICE: how to make it
+ *   From screenshots (default) — upload a picture of each screen (the editor).
+ *   From a video               — record the screen or upload a video, then add
+ *                                steps from it (pages/VideoTour).
+ *   `#/new?mode=video` preselects the video option from a link.
+ *
  * FIELDS
  *   Course title (required, UNIQUE) — how you'll find it again in search.
  *   Page name    (required)         — the app page/module it explains, e.g.
@@ -10,17 +16,28 @@
  * UNIQUE TITLE: checked live (debounced) against IndexedDB and again on
  * submit. If taken, the form shows a link to open the existing course.
  *
- * FLOW: Create → draft Course with one empty "Step 1" saved to IndexedDB
- *   → redirect to #/editor/:id, which opens on "Add the screenshot for step 1".
+ * FLOW: Create → draft Course saved to IndexedDB, then
+ *   screenshots → one empty "Step 1" → #/editor/:id ("Add the screenshot for step 1")
+ *   video       → no steps, source 'video' → #/video/:id (record or upload)
  */
 
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Sparkles, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Plus,
+  Sparkles,
+  AlertCircle,
+  CheckCircle2,
+  Images,
+  Video,
+} from 'lucide-react';
 import { findCourseByTitle, saveCourse } from '@/services/storage/db';
 import { CONTEXT_OPTIONS, CONTEXT_LABELS } from '@/constants';
 import { nextId } from '@/utils';
 import { useToast } from '@/hooks/useToast';
+import { Tooltip } from '@/components/ui/Tooltip';
 
 /** @typedef {import('@/types').Course} Course */
 
@@ -30,16 +47,45 @@ const INPUT_CLASS =
   'w-full px-4 py-3 rounded-xl bg-paper-2 dark:bg-paper-2-dark border text-sm text-ink dark:text-ink-soft-dark outline-none focus:ring-4 transition-all';
 const LABEL_CLASS = 'block text-sm font-semibold text-ink dark:text-ink-soft-dark mb-1.5';
 
+const MODES = [
+  {
+    value: 'screenshots',
+    Icon: Images,
+    title: 'From screenshots',
+    text: 'Upload a picture of each screen',
+    tip: 'Make it from pictures of your screens',
+  },
+  {
+    value: 'video',
+    Icon: Video,
+    title: 'From a video',
+    text: 'Record your screen or upload a video',
+    tip: 'Record what you do, then add steps from the video',
+  },
+];
+
+const modeFromQuery = (params) => (params.get('mode') === 'video' ? 'video' : 'screenshots');
+
 export function NewCoursePage() {
   const navigate = useNavigate();
   const { notify } = useToast();
+  const [searchParams] = useSearchParams();
+  const [mode, setMode] = useState(() => modeFromQuery(searchParams));
   const [title, setTitle] = useState('');
   const [pageName, setPageName] = useState('');
+  // setContext: used by the "What are you showing?" picker (hidden for now).
+  // eslint-disable-next-line no-unused-vars
   const [context, setContext] = useState('page_feature');
   const [description, setDescription] = useState('');
+  const [showDescription, setShowDescription] = useState(false);
   const [creating, setCreating] = useState(false);
   /** Course that already uses the typed title (null = title is free). */
   const [titleClash, setTitleClash] = useState(null);
+
+  // A link to #/new?mode=… while already on this page.
+  useEffect(() => {
+    setMode(modeFromQuery(searchParams));
+  }, [searchParams]);
 
   // Live unique-title check, debounced so we don't query on every keystroke.
   useEffect(() => {
@@ -74,6 +120,7 @@ export function NewCoursePage() {
       setCreating(false);
       return;
     }
+    const fromVideo = mode === 'video';
     /** @type {Course} */
     const course = {
       id: nextId('course'),
@@ -83,24 +130,31 @@ export function NewCoursePage() {
       description: description.trim(),
       status: 'draft',
       baseImageId: null, // legacy field; screenshots now live on each step
-      steps: [
-        {
-          id: nextId('step'),
-          label: 'Step 1',
-          text: '',
-          imageId: null,
-          region: null,
-          action: 'click',
-          audioId: null,
-        },
-      ],
+      source: fromVideo ? 'video' : 'screenshots',
+      ...(fromVideo && { sourceVideoId: null }),
+      // Video courses get their steps from the video (#/video/:id).
+      steps: fromVideo
+        ? []
+        : [
+            {
+              id: nextId('step'),
+              label: 'Step 1',
+              text: '',
+              imageId: null,
+              region: null,
+              action: 'click',
+              audioId: null,
+            },
+          ],
       createdAt: Date.now(),
       updatedAt: Date.now(),
       publishedAt: null,
     };
     await saveCourse(course);
     notify('Course created', 'success');
-    navigate(`/editor/${course.id}`);
+    // replace: the form is not a page to come back to (Back from the finished
+    // walkthrough should never land in the creation flow again)
+    navigate(fromVideo ? `/video/${course.id}` : `/editor/${course.id}`, { replace: true });
   };
 
   const submitOnEnter = (e) => {
@@ -109,31 +163,78 @@ export function NewCoursePage() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-6 py-10">
-      <button
-        onClick={() => navigate('/')}
-        className="flex items-center gap-2 text-sm text-ink-soft dark:text-ink-soft-dark hover:text-ink transition-colors mb-6"
-      >
-        <ArrowLeft className="w-4 h-4" />
-        Back to courses
-      </button>
+      <Tooltip label="Go back to your courses" className="mb-6">
+        <button
+          onClick={() => navigate('/')}
+          className="flex items-center gap-2 text-sm text-ink-soft dark:text-ink-soft-dark hover:text-ink transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to courses
+        </button>
+      </Tooltip>
 
       <div className="relative overflow-hidden rounded-3xl border border-line dark:border-line-dark bg-panel dark:bg-panel-dark shadow-sm p-6 sm:p-10">
         <div className="absolute -top-32 -right-32 w-80 h-80 rounded-full bg-accent/10 blur-3xl pointer-events-none" />
 
         <div className="relative mb-8">
-          <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-accent mb-2">
+          {/* <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-accent mb-2">
             <Sparkles className="w-3.5 h-3.5" /> New walkthrough
-          </p>
+          </p> */}
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-ink dark:text-ink-soft-dark">
             What are you explaining?
           </h1>
           <p className="text-sm text-ink-soft dark:text-ink-soft-dark mt-2">
-            Give it a clear name — you&apos;ll find it later by searching the title or the page
-            name.
+            Pick how you want to make it, then give it a name.
           </p>
         </div>
 
         <div className="relative space-y-6">
+          {/* How to make it */}
+          <div
+            className="grid grid-cols-1 sm:grid-cols-2 gap-3"
+            role="radiogroup"
+            aria-label="Make it"
+          >
+            {MODES.map(({ value, Icon, title: modeTitle, text, tip }) => {
+              const chosen = mode === value;
+              return (
+                <Tooltip key={value} label={tip} className="w-full">
+                  <button
+                    role="radio"
+                    aria-checked={chosen}
+                    onClick={() => setMode(value)}
+                    className={`relative w-full flex items-center gap-3.5 p-4 sm:p-5 rounded-2xl border-2 text-left transition-all ${
+                      chosen
+                        ? 'border-accent bg-accent-soft/40 dark:bg-accent-soft-dark/25 ring-4 ring-accent/10'
+                        : 'border-line dark:border-line-dark hover:border-accent/50'
+                    }`}
+                  >
+                    <span
+                      className={`w-12 h-12 flex-shrink-0 rounded-xl flex items-center justify-center ${
+                        chosen
+                          ? 'bg-accent text-white'
+                          : 'bg-paper-2 dark:bg-paper-2-dark text-ink-soft dark:text-ink-soft-dark'
+                      }`}
+                    >
+                      <Icon className="w-6 h-6" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-base font-bold text-ink dark:text-ink-soft-dark">
+                        {modeTitle}
+                      </span>
+                      <span className="block text-xs text-ink-soft dark:text-ink-faint-dark mt-0.5">
+                        {text}
+                      </span>
+                    </span>
+                    {chosen && (
+                      <CheckCircle2 className="absolute top-2.5 right-2.5 w-4 h-4 text-accent" />
+                    )}
+                  </button>
+                </Tooltip>
+              );
+            })}
+          </div>
+
           {/* Title */}
           <div>
             <label htmlFor="title" className={LABEL_CLASS}>
@@ -187,12 +288,12 @@ export function NewCoursePage() {
               className={`${INPUT_CLASS} border-line dark:border-line-dark focus:border-accent focus:ring-accent/15`}
             />
             <p className="mt-1.5 text-xs text-ink-faint dark:text-ink-faint-dark">
-              The page or module of your application this course is about.
+              The part of your app it is about.
             </p>
           </div>
 
           {/* Context */}
-          <div>
+          {/* <div>
             <span className={LABEL_CLASS}>What are you showing?</span>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {CONTEXT_OPTIONS.map((opt) => (
@@ -214,33 +315,64 @@ export function NewCoursePage() {
                 </button>
               ))}
             </div>
-          </div>
+          </div> */}
 
-          {/* Description */}
-          <div>
-            <label htmlFor="description" className={LABEL_CLASS}>
-              Description{' '}
-              <span className="text-ink-faint dark:text-ink-faint-dark font-normal">
-                (optional)
-              </span>
-            </label>
-            <textarea
-              id="description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Briefly describe what this walkthrough covers..."
-              rows={3}
-              className={`${INPUT_CLASS} border-line dark:border-line-dark focus:border-accent focus:ring-accent/15 resize-none`}
-            />
-          </div>
+          {/* Description: optional, so hidden until asked for */}
+          {showDescription ? (
+            <div>
+              <label htmlFor="description" className={LABEL_CLASS}>
+                Description{' '}
+                <span className="text-ink-faint dark:text-ink-faint-dark font-normal">
+                  (optional)
+                </span>
+              </label>
+              <textarea
+                id="description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What does this walkthrough show?"
+                rows={3}
+                autoFocus
+                className={`${INPUT_CLASS} border-line dark:border-line-dark focus:border-accent focus:ring-accent/15 resize-none`}
+              />
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowDescription(true)}
+              className="flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline"
+            >
+              <Plus className="w-4 h-4" /> Add a description (optional)
+            </button>
+          )}
 
-          <button
-            onClick={handleCreate}
-            disabled={!canCreate}
-            className="w-full flex items-center justify-center gap-2 px-4 h-12 rounded-xl bg-accent text-white font-semibold shadow-lg shadow-accent/25 hover:bg-accent-dark disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed transition-all"
+          <Tooltip
+            label={
+              mode === 'video'
+                ? 'Create it, then record or upload your video'
+                : 'Create it, then add your screenshots'
+            }
+            shortcut="Enter"
+            className="w-full"
           >
-            {creating ? 'Creating…' : 'Create course'}
-          </button>
+            <button
+              onClick={handleCreate}
+              disabled={!canCreate}
+              className="w-full flex items-center justify-center gap-2 px-4 h-12 rounded-xl bg-accent text-white font-semibold shadow-lg shadow-accent/25 hover:bg-accent-dark disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed transition-all"
+            >
+              {creating ? (
+                'Creating…'
+              ) : mode === 'video' ? (
+                <>
+                  <span className="w-3 h-3 rounded-full bg-white" aria-hidden="true" /> Continue to
+                  recording
+                </>
+              ) : (
+                <>
+                  Continue to screenshots <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </Tooltip>
         </div>
       </div>
     </div>

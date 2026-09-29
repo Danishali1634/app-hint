@@ -47,7 +47,9 @@
  *   'click' → "press this": animated pointer clicks it and the NEXT step's
  *             screenshot opens out of it (cause → effect).
  *   'look'  → "notice this": spotlight + pulse only (e.g. the chart inside a modal).
- * @typedef {'click' | 'look'} StepAction
+ *   'type'  → "enter a value here": spotlight + the value is typed into the area
+ *             with a blinking caret (Step.typeValue, or a generic typing animation).
+ * @typedef {'click' | 'look' | 'type'} StepAction
  */
 
 /**
@@ -59,9 +61,21 @@
  * @property {string} text        Description; read aloud by TTS when there is no recording
  * @property {string | null} [imageId]  This step's screenshot (media store). Missing on
  *                                      old courses → falls back to course.baseImageId
- * @property {Region | null} region     The feature area on this step's screenshot
+ * @property {Region | null} region     The feature area on this step's screenshot (target 1)
+ * @property {Region[]} [extraRegions]  More targets of the same step (2, 3 …), highlighted
+ *                                      together with `region` (utils/course.getStepTargets)
+ * @property {string[]} [extraTexts]    Descriptions of targets 2, 3 … (target 1 = `text`).
+ *                                      When written, each target is explained in turn.
  * @property {StepAction} [action]      Default 'click' (see utils/course.getStepAction)
  * @property {string | null} audioId    Key of the recorded audio Blob in the media store
+ * @property {string} [typeValue]       'type' steps: sample value typed in the walkthrough (optional)
+ * @property {string | null} [groupId]  Multiple Steps: consecutive steps with the same groupId
+ *                                      are sub-steps (Area 1, 2 …) of one main step on the same
+ *                                      screenshot. Missing/null = a normal single step.
+ *                                      Editor-only; playback treats them as normal steps.
+ * @property {number} [videoTime]       "Create by video": seconds into course.sourceVideoId
+ *                                      where this step's screenshot was taken. Steps are
+ *                                      ordered by it there; playback ignores it.
  */
 
 /**
@@ -76,7 +90,17 @@
  * @property {CourseStatus} status
  * @property {string | null} [baseImageId]  LEGACY: one screenshot shared by all steps.
  *                                          New courses use step.imageId instead.
- * @property {Step[]} steps                  Max length: MAX_STEPS
+ * @property {Step[]} steps                  Max length: MAX_STEPS (unlimited by default)
+ * @property {string[]} [gallery]            Screenshot gallery: media ids uploaded to this course,
+ *                                          reusable by any step (kept even when unused;
+ *                                          utils/course.getCourseScreens)
+ * @property {'screenshots' | 'video'} [source]  How the course was started (missing = screenshots)
+ * @property {string | null} [sourceVideoId]  "Create by video": the recording (media store) the
+ *                                          steps' screenshots are taken from (pages/VideoTour)
+ * @property {number | null} [sourceVideoDuration]  Measured recording length, seconds (fallback
+ *                                          when the WebM file reports no duration)
+ * @property {Step[]} [videoDraftSteps]      "Create by video": steps in progress, autosaved;
+ *                                          written to `steps` only by "Save walkthrough"
  * @property {number} createdAt              Epoch ms
  * @property {number} updatedAt              Epoch ms — library sorts by this; drives auto-delete
  * @property {number | null} publishedAt     Epoch ms, set when published
@@ -90,7 +114,9 @@
  * @property {string} label
  * @property {string} text
  * @property {Region | null} region
+ * @property {Region[]} [extraRegions]  targets 2, 3 … (see Step)
  * @property {StepAction} action
+ * @property {string} [typeValue]       'type' steps: the value to type (may be empty)
  * @property {string | null} audioData  data: URL of the recording
  * @property {string | null} imageData  data: URL of this step's screenshot
  */
