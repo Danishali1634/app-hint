@@ -78,6 +78,16 @@ const withStrip = E.editorScreen({
   showStrip: true,
 });
 
+const undoScreen = E.editorScreen({
+  stage: 'edit',
+  steps: 2,
+  box: true,
+  secondBox: true,
+  hint: 'Feature 2 is ready',
+  done: true,
+  undoToast: true,
+});
+
 const card1 = E.cardBoxes(E.CARD_TOP_FIRST);
 const card2 = E.cardBoxes(E.CARD_TOP_SECOND);
 
@@ -226,6 +236,40 @@ const TUTORIALS = {
         action: 'look',
         label: 'Pick the screenshot',
         text: 'Each feature can show its own screenshot. Pick the right one here.',
+      }),
+    ],
+  },
+  edit: {
+    title: 'Change or delete a feature',
+    summary: 'Open a feature to change it, or delete one you added by mistake.',
+    steps: [
+      step('ed-1', {
+        screen: twoStepsBox,
+        box: E.DONE_ROW,
+        pad: 0,
+        label: 'Open a feature',
+        text: 'To change a feature, click it in this list. It opens with its box and its sentence.',
+      }),
+      step('ed-2', {
+        screen: twoStepsBox,
+        box: card2.highlight,
+        action: 'look',
+        label: 'Change it',
+        text: 'Drag the box to move it, or point at it to draw it again. Everything saves by itself.',
+      }),
+      step('ed-3', {
+        screen: twoStepsBox,
+        box: E.DONE_BIN,
+        pad: 8,
+        label: 'Delete one',
+        text: 'Added one by mistake? Press the bin next to it, and that feature is gone.',
+      }),
+      step('ed-4', {
+        screen: undoScreen,
+        box: E.UNDO_BUTTON,
+        pad: 6,
+        label: 'Undo a stray box',
+        text: 'Drew a box by accident? It adds a new feature. Just press Undo in the message at the top.',
       }),
     ],
   },
@@ -386,6 +430,7 @@ const SCREENSHOT_ORDER = [
   'describe',
   'step',
   'screen',
+  'edit',
   'share',
 ];
 const RECORDING_ORDER = ['record', 'video-steps', 'video-more', 'video-save'];

@@ -44,6 +44,17 @@ export function ToastContainer() {
           >
             <Icon className="w-5 h-5 flex-shrink-0 mt-0.5" />
             <p className="text-sm font-medium leading-snug flex-1">{toast.message}</p>
+            {toast.action && (
+              <button
+                onClick={() => {
+                  toast.action.onClick();
+                  dismiss(toast.id);
+                }}
+                className="pointer-events-auto px-2.5 h-7 rounded-lg bg-black/10 hover:bg-black/20 dark:bg-white/15 dark:hover:bg-white/25 text-sm font-semibold flex-shrink-0 transition-colors"
+              >
+                {toast.action.label}
+              </button>
+            )}
             <button
               onClick={() => dismiss(toast.id)}
               className="pointer-events-auto flex-shrink-0 opacity-70 hover:opacity-100 transition-opacity"

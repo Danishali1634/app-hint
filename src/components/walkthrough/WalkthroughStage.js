@@ -341,8 +341,9 @@ function TypingField({ box, stageHeight, value }) {
   const boxPx = (box.h / 100) * stageHeight;
   const fontSize = Math.max(11, Math.min(20, boxPx * 0.45));
   // A small box (an input field) is filled like a real field. A bigger area
-  // only gets a compact typing pill, so what is highlighted stays visible
-  // (filling it would blank the whole area white while the voice speaks).
+  // gets a typing bar across its FULL width but only one line high, centred,
+  // so the typing spans the whole selection while what is highlighted above
+  // and below it stays visible (filling it all would blank the area white).
   const pillHeight = Math.min(boxPx, fontSize * 2);
   const fills = boxPx <= fontSize * 2.4;
   return (
@@ -354,7 +355,7 @@ function TypingField({ box, stageHeight, value }) {
     >
       <div
         className={`hs-caption-in max-h-full rounded-md bg-white/95 ring-1 ring-black/10 shadow-sm overflow-hidden flex flex-row-reverse justify-end items-center px-[0.5em] gap-[1px] ${
-          fills ? 'w-full h-full' : 'max-w-[90%] min-w-[6em]'
+          fills ? 'w-full h-full' : 'w-[calc(100%-12px)]'
         }`}
         style={{ fontSize, height: fills ? undefined : pillHeight }}
       >

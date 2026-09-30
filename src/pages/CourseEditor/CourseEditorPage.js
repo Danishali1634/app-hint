@@ -388,6 +388,11 @@ export function CourseEditorPage() {
     [course, updateCourse, activeStepId, releaseImage],
   );
 
+  // Always the latest deleteSteps (an "Undo" pressed seconds later must not work
+  // on the course as it was when the toast appeared).
+  const deleteStepsRef = useRef(deleteSteps);
+  deleteStepsRef.current = deleteSteps;
+
   /** Moves the Global Step at position `from` to position `to` (StepRail drag & drop). */
   const reorderSteps = useCallback(
     (from, to) => {
@@ -676,6 +681,13 @@ export function CourseEditorPage() {
     steps.splice(activeUnit.end + 1, 0, newStep);
     updateCourse({ steps: renumberDefaultLabels(steps) });
     setActiveStepId(newStep.id);
+    // Drawing a box is all it takes to add a feature, so a stray drag can add one
+    // by accident: offer a one-click way back.
+    if (region) {
+      notify(`Feature ${activeUnit.end - activeUnit.start + 2} added`, 'info', {
+        action: { label: 'Undo', onClick: () => deleteStepsRef.current([newStep.id]) },
+      });
+    }
   };
 
   /** Delete a sub-step from the editor: right away when it is still empty, else ask. */

@@ -291,7 +291,7 @@ function drawTypingField(ctx, { box: area, value, time, alpha }) {
   // (an input field) is filled; a bigger area only gets a compact typing pill
   // in its middle, so what is highlighted stays visible.
   const fills = area.h <= fontSize * 2.4;
-  const pillW = Math.min(area.w * 0.9, Math.max(fontSize * 6, textW + dotsW + padX * 2 + 4));
+  const pillW = Math.max(0, area.w - 12); // full width of the selection, one line high
   const pillH = Math.min(area.h, fontSize * 2);
   const box = fills
     ? area

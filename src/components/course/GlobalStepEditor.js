@@ -498,6 +498,7 @@ export function GlobalStepEditor({
           <div className="flex-shrink-0 border-t border-line dark:border-line-dark p-2">
             <div className="flex items-center gap-2">
               <WhatsNext
+                label="What next?"
                 options={[
                   {
                     art: 'draw',
@@ -532,7 +533,8 @@ export function GlobalStepEditor({
                     onClick={() => moveTo(activeIndex - 1)}
                     className="flex items-center gap-1 px-2.5 h-9 rounded-lg text-sm font-medium text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark"
                   >
-                    <ChevronLeft className="w-4 h-4" /> Previous
+                    <ChevronLeft className="w-4 h-4" />
+                    <span className="hidden 2xl:inline">Previous</span>
                   </button>
                 </Tooltip>
               )}
@@ -549,7 +551,7 @@ export function GlobalStepEditor({
                   <button
                     data-tour="add-step"
                     onClick={() => moveTo(activeIndex + 1)}
-                    className="flex items-center gap-1 pl-3 pr-2.5 h-9 rounded-lg border border-line dark:border-line-dark text-ink dark:text-ink-soft-dark text-sm font-semibold hover:border-ink-faint dark:hover:border-ink-faint-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"
+                    className="flex items-center gap-1 pl-3 pr-2.5 h-9 rounded-lg border border-line dark:border-line-dark text-ink dark:text-ink-soft-dark text-sm font-semibold whitespace-nowrap hover:border-ink-faint dark:hover:border-ink-faint-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"
                   >
                     {isLast ? (
                       <>
@@ -663,6 +665,19 @@ function SubStepCard({
             <AlertCircle className="w-4 h-4 text-amber-500" />
           </Tooltip>
         )}
+        {/* Always visible: an accidental feature is one click away from gone */}
+        <Tooltip label={`Delete feature ${number}`}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className={`${SMALL_ICON_BUTTON_CLASS} w-7 h-7 hover:text-danger hover:bg-danger/10`}
+            aria-label={`Delete feature ${number}`}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </Tooltip>
       </div>
     );
   }
@@ -717,7 +732,7 @@ function SubStepCard({
         <Tooltip label="Delete this feature">
           <button
             onClick={onDelete}
-            className={`${SMALL_ICON_BUTTON_CLASS} w-7 h-7 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-danger hover:bg-danger/10`}
+            className={`${SMALL_ICON_BUTTON_CLASS} w-7 h-7 hover:text-danger hover:bg-danger/10`}
             aria-label={`Delete feature ${number}`}
           >
             <Trash2 className="w-3.5 h-3.5" />

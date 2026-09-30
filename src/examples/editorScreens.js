@@ -39,6 +39,15 @@ function button(box, label, { primary = true, size = 16 } = {}) {
   return `${rect(box, { fill: primary ? BLUE : '#fff', stroke: primary ? BLUE : LINE, r: 10 })}
 ${text(box.x + box.w / 2, box.y + box.h / 2 + size / 3 + 1, label, { size, weight: 600, color: primary ? '#fff' : SOFT, anchor: 'middle' })}`;
 }
+/** A small grey bin (delete) button. */
+function bin(box) {
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return `<rect x="${cx - 6}" y="${cy - 4}" width="12" height="12" rx="2" fill="none" stroke="${FAINT}" stroke-width="1.8"/>
+<line x1="${cx - 8}" y1="${cy - 5}" x2="${cx + 8}" y2="${cy - 5}" stroke="${FAINT}" stroke-width="1.8" stroke-linecap="round"/>
+<line x1="${cx - 2}" y1="${cy - 8}" x2="${cx + 2}" y2="${cy - 8}" stroke="${FAINT}" stroke-width="1.8" stroke-linecap="round"/>`;
+}
+
 /** "⋯" */
 function dots(cx, cy, color = SOFT) {
   return [-7, 0, 7]
@@ -80,6 +89,12 @@ export function cardBoxes(cardTop) {
   };
 }
 export const CARD_TOP_FIRST = 126;
+/** The collapsed Feature 1 row (when Feature 2 is open) and its delete button. */
+export const DONE_ROW = { x: 936, y: 126, w: 320, h: 48 };
+export const DONE_BIN = { x: 1216, y: 136, w: 28, h: 28 };
+/** The "Feature 2 added · Undo" message at the top. */
+export const UNDO_TOAST = { x: 470, y: 8, w: 340, h: 44 };
+export const UNDO_BUTTON = { x: 726, y: 16, w: 72, h: 28 };
 export const CARD_TOP_SECOND = 184;
 
 // ─── Pieces ──────────────────────────────────────────────────────────────────
@@ -190,7 +205,8 @@ function openCard(top, number, { box, description }) {
   let out = `${rect({ x: 936, y: top, w: 320, h: box ? 316 : 250 }, { fill: '#fff', stroke: '#9cc0f7', r: 12 })}
 <circle cx="962" cy="${top + 26}" r="13" fill="${BLUE}"/>
 ${text(962, top + 31, String(number), { size: 14, weight: 700, color: '#fff', anchor: 'middle' })}
-${text(986, top + 32, `Feature ${number}`, { size: 17, weight: 700 })}`;
+${text(986, top + 32, `Feature ${number}`, { size: 17, weight: 700 })}
+${bin({ x: 1216, y: top + 12, w: 28, h: 28 })}`;
   if (!box) {
     // Before the first box: only the hint
     const cx = 1096;
@@ -231,7 +247,8 @@ function doneCard() {
 <circle cx="962" cy="150" r="12" fill="#fff" stroke="${LINE}"/>
 ${text(962, 155, '✓', { size: 13, weight: 700, color: FAINT, anchor: 'middle' })}
 ${text(986, 156, 'Feature 1', { size: 16, weight: 700 })}
-${text(1046, 156, '· Click New order', { size: 15, color: SOFT })}`;
+${text(1070, 156, '· Click New order', { size: 15, color: SOFT })}
+${bin(DONE_BIN)}`;
 }
 
 function panel({ steps, box, description, secondBox }) {
@@ -274,6 +291,7 @@ export function editorScreen({
   done = false,
   showStrip = false,
   showMenu = false,
+  undoToast = false,
 }) {
   const ready = stage === 'edit' ? (box ? 1 : 0) + (steps === 2 && secondBox ? 1 : 0) : 0;
   let body = header({ ready, total: steps });
@@ -293,6 +311,12 @@ ${button(UPLOAD_BUTTON, 'Upload screenshot', { size: 17 })}`;
     body += canvas(showStrip ? CANVAS_TOP_WITH_STRIP : CANVAS.y, { box, second: secondBox });
     body += panel({ steps, box, description, secondBox });
     if (showMenu) body += shotMenu();
+    if (undoToast) {
+      body += `<rect x="${UNDO_TOAST.x}" y="${UNDO_TOAST.y}" width="${UNDO_TOAST.w}" height="${UNDO_TOAST.h}" rx="14" fill="#ffffff" stroke="${LINE}"/>
+${text(UNDO_TOAST.x + 20, UNDO_TOAST.y + 28, 'ⓘ  Feature 2 added', { size: 15, weight: 600 })}
+<rect x="${UNDO_BUTTON.x}" y="${UNDO_BUTTON.y}" width="${UNDO_BUTTON.w}" height="${UNDO_BUTTON.h}" rx="8" fill="#eef1f5"/>
+${text(UNDO_BUTTON.x + UNDO_BUTTON.w / 2, UNDO_BUTTON.y + 19, 'Undo', { size: 14, weight: 700, anchor: 'middle' })}`;
+    }
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${SCREEN_W} ${SCREEN_H}" width="${SCREEN_W * 2}" height="${SCREEN_H * 2}">
 <rect width="${SCREEN_W}" height="${SCREEN_H}" fill="${PAPER}"/>

@@ -5,7 +5,8 @@
  * and a single <ToastContainer /> (mounted in AppRouter) renders all toasts.
  *
  * FLOW
- *   notify(msg, type) → toast added to list → ToastContainer renders it
+ *   notify(msg, type, { action }) → toast added to list → ToastContainer renders it
+ *   (an optional `action: { label, onClick }` adds a button, e.g. "Undo")
  *                     → removed automatically after TOAST_DURATION_MS, or by dismiss(id)
  */
 
@@ -35,11 +36,14 @@ export function ToastProvider({ children }) {
     /**
      * @param {string} message
      * @param {ToastMessage['type']} [type='info']
+     * @param {{ action?: { label: string, onClick: () => void } }} [options]
      */
-    (message, type = 'info') => {
+    (message, type = 'info', options = {}) => {
       const id = nextId('toast');
-      setToasts((prev) => [...prev, { id, message, type }].slice(-MAX_VISIBLE_TOASTS));
-      setTimeout(() => dismiss(id), TOAST_DURATION_MS);
+      const { action } = options;
+      setToasts((prev) => [...prev, { id, message, type, action }].slice(-MAX_VISIBLE_TOASTS));
+      // A toast with a button stays a little longer, so there is time to press it.
+      setTimeout(() => dismiss(id), action ? TOAST_DURATION_MS + 2000 : TOAST_DURATION_MS);
     },
     [dismiss],
   );
@@ -52,7 +56,7 @@ export function ToastProvider({ children }) {
 /**
  * @returns {{
  *   toasts: ToastMessage[],
- *   notify: (message: string, type?: ToastMessage['type']) => void,
+ *   notify: (message: string, type?: ToastMessage['type'], options?: { action?: { label: string, onClick: () => void } }) => void,
  *   dismiss: (id: string) => void,
  * }}
  */

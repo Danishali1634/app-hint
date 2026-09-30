@@ -5,7 +5,6 @@
  * #/courses). Sections, top → bottom (new sections live in components/home):
  *   1. Hero            — short pitch · the two start cards (screenshots / record)
  *                        over a drifting blob + grid backdrop (HeroBackdrop)
- *   2. Find a course   — search (results appear only while typing) · Import · View all
  *   3. Product visual  — the looping HowItWorksDemo in a floating frame (HeroVisual)
  *   4. See it in action— real example courses in the real player (ExamplesShowcase)
  *   5. For businesses  — the mission + four outcome goals (BusinessGoals)
@@ -22,19 +21,11 @@
  * prefers-reduced-motion. The root clips horizontal overflow so the
  * decorative blobs can never cause a sideways scroll.
  *
- * Search matches title and page name; with no match it shows "No results
- * found" + "Did you mean" suggestions (utils/search.js via CourseResults).
- * Loading and card actions come from useCourseLibrary.
+ * Saved courses are not listed here: they are in the sidebar and on #/courses.
  */
 
-import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Upload, LibraryBig, PlayCircle, Images, MonitorPlay } from 'lucide-react';
-import { searchCourses } from '@/utils/search';
-import { useCourseLibrary } from '@/hooks/useCourseLibrary';
-import { SearchInput } from '@/components/ui/SearchInput';
-import { CourseResults } from '@/components/course/CourseResults';
-import { Spinner } from '@/components/ui/Spinner';
 import { ProductStats, UseCases } from '@/components/tutorial/Highlights';
 import { HomeKeyframes, Reveal, SectionHeading } from '@/components/home/HomeMotion';
 import { HeroBackdrop, HeroVisual } from '@/components/home/HeroBackdrop';
@@ -53,94 +44,16 @@ const SECTION_GAP = 'mt-28 sm:mt-36';
 
 export function HomePage() {
   const navigate = useNavigate();
-  const library = useCourseLibrary();
-  const [query, setQuery] = useState('');
-  const fileInputRef = useRef(null);
-
-  const { matches, suggestions } = useMemo(
-    () => searchCourses(library.courses, query),
-    [library.courses, query],
-  );
-  const isSearching = query.trim().length > 0;
-  const count = library.courses.length;
 
   return (
     <div className="relative overflow-x-clip">
       <HomeKeyframes />
 
-      {/* ── 1. Hero (+ 2. search, 3. product visual) over the animated backdrop ── */}
+      {/* ── 1. Hero (+ the product visual) over the animated backdrop ── */}
       <div className="relative isolate">
         <HeroBackdrop />
         <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-14 sm:pt-24">
           <HeroStart />
-
-          {/* ── 2. Find an existing course ── */}
-          <section className="mt-14 max-w-5xl mx-auto">
-            <div className="rounded-3xl border border-line dark:border-line-dark bg-panel/80 dark:bg-panel-dark/80 backdrop-blur-xl shadow-premium p-5 sm:p-7">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
-                <div>
-                  <h2 className="text-lg font-semibold text-ink dark:text-ink-soft-dark">
-                    Find an existing course
-                  </h2>
-                  <p className="text-sm text-ink-soft dark:text-ink-faint-dark">
-                    Search by course title or page name — even a rough spelling works.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".zip"
-                    onChange={library.importZip}
-                    className="hidden"
-                  />
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-1.5 px-3.5 h-10 rounded-xl text-sm font-medium text-ink-soft dark:text-ink-faint-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"
-                    title="Import a course from an exported ZIP"
-                  >
-                    <Upload className="w-4 h-4" /> Import
-                  </button>
-                  <button
-                    onClick={() => navigate('/courses')}
-                    disabled={count === 0}
-                    className="flex items-center gap-1.5 px-4 h-10 rounded-xl border border-line dark:border-line-dark text-sm font-semibold text-ink dark:text-ink-soft-dark hover:border-accent hover:text-accent disabled:opacity-50 disabled:pointer-events-none transition-colors"
-                  >
-                    <LibraryBig className="w-4 h-4" /> View all courses
-                    <span className="text-xs font-medium text-ink-faint dark:text-ink-faint-dark">
-                      {count}
-                    </span>
-                  </button>
-                </div>
-              </div>
-              <SearchInput
-                value={query}
-                onChange={setQuery}
-                placeholder={
-                  count
-                    ? 'Search e.g. “Return Repack” or “receive stock”'
-                    : 'No saved courses yet — create one above'
-                }
-              />
-            </div>
-
-            {isSearching && (
-              <div className="mt-8">
-                {library.loading ? (
-                  <div className="flex justify-center py-10">
-                    <Spinner />
-                  </div>
-                ) : (
-                  <CourseResults
-                    query={query}
-                    matches={matches}
-                    suggestions={suggestions}
-                    cardProps={library.cardProps}
-                  />
-                )}
-              </div>
-            )}
-          </section>
 
           {/* ── 3. Product visual ── */}
           <div className="mt-20 sm:mt-24">
@@ -217,7 +130,6 @@ export function HomePage() {
       {/* ── 12. Footer ── */}
       <SiteFooter />
 
-      {library.overlays}
     </div>
   );
 }

@@ -120,7 +120,7 @@ export async function createAudioRecorder(onStateChange) {
       if (e.data.size > 0) chunks.push(e.data);
     };
 
-    // Fires after stop(); this is the only point where all chunks are available.
+    // Fires after stop(); this is the only point where all chunks are Navailable.
     mediaRecorder.onstop = () => {
       const blob = new Blob(chunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
       cleanupStream();

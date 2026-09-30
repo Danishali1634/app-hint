@@ -474,7 +474,22 @@ function TourBuilder({
       ...(region ? withTargets([region]) : {}),
     };
     changeSteps([...prev, step]);
+    const cameFrom = editingId;
     setEditingId(step.id);
+    // A box drawn on a picture that already has one adds a feature by itself, so
+    // a stray drag can add one by accident: offer a one-click way back (the
+    // picture stays, the other feature still uses it).
+    if (region) {
+      notify('New feature added', 'info', {
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            changeSteps((all) => all.filter((s) => s.id !== step.id));
+            setEditingId((id) => (id === step.id ? cameFrom : id));
+          },
+        },
+      });
+    }
   };
 
   /** "Next step on this picture": same frame, same moment, a separate step. */

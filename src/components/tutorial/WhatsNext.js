@@ -130,7 +130,7 @@ export function WhatsNext({ options, label = 'What to do next?' }) {
         onClick={() =>
           setAnchor((a) => (a ? null : (btnRef.current?.getBoundingClientRect() ?? null)))
         }
-        className="flex items-center gap-1.5 px-2.5 h-9 rounded-lg text-sm font-medium text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"
+        className="flex items-center gap-1.5 px-2.5 h-9 rounded-lg text-sm font-medium whitespace-nowrap text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"
         aria-haspopup="dialog"
         aria-expanded={!!anchor}
       >

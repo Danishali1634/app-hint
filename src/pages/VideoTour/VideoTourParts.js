@@ -315,14 +315,11 @@ export function VideoStepList({ steps, frameUrls, activeId, onOpen, onDelete }) 
         </Tooltip>
         <span className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center">
           {noBox && (
-            <Tooltip label="No box yet: open it and drag a box" className="group-hover:hidden">
+            <Tooltip label="No box yet: open it and drag a box">
               <AlertCircle className="w-4 h-4 text-danger" aria-label="No box yet" />
             </Tooltip>
           )}
-          <Tooltip
-            label="Delete this feature"
-            className={`${noBox ? 'hidden group-hover:inline-flex' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}
-          >
+          <Tooltip label="Delete this feature">
             <button
               onClick={() => onDelete(step)}
               className="w-7 h-7 rounded-md flex items-center justify-center text-ink-faint dark:text-ink-faint-dark hover:text-danger hover:bg-danger/10"

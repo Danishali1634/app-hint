@@ -317,7 +317,7 @@ function DeleteButton({ label, onDelete }) {
           e.stopPropagation(); // don't also select the step
           onDelete();
         }}
-        className="w-7 h-7 rounded-lg text-ink-faint hover:text-danger hover:bg-danger/10 flex items-center justify-center transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100 flex-shrink-0"
+        className="w-7 h-7 rounded-lg text-ink-faint/70 dark:text-ink-faint-dark/70 hover:text-danger hover:bg-danger/10 flex items-center justify-center transition-colors flex-shrink-0"
         aria-label={label}
       >
         <Trash2 className="w-3.5 h-3.5" />
