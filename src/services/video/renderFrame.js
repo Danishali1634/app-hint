@@ -6,6 +6,15 @@
  *   screen/tab. A canvas can be recorded silently with captureStream(), so the
  *   player's visuals are redrawn here with the 2D API:
  *     camera zoom · spotlight · pulsing ring · pointer + click ripples · caption.
+ *
+ * TWO LAYOUTS (frame.mobile, from exportVideo's format):
+ *   Web     1280×720, title and margins around the picture; the caption shows
+ *           the description in up to 3 lines (then …) — as always.
+ *   Mobile  the phone's full screen (portrait or landscape): thin margins so
+ *           the picture gets the whole area; the caption text is never cut
+ *           off — the font shrinks a little to fit, and a long description is
+ *           shown in parts (utils/captionParts), each while the voice says it
+ *           (step.captionParts / step.captionPartStarts, from exportVideo).
  *   The maths (utils/camera.js) and timing (WALKTHROUGH_TIMING) are shared with
  *   the live player, so the video matches what people see on screen.
  *
@@ -16,6 +25,7 @@
 import { OVERVIEW_VIEW, projectRegion, regionCenter } from '@/utils/camera';
 import { captionAwareView, placeCaption } from '@/utils/captionPlacement';
 import { getFocusRegion, getStepTargets, getStepTitles } from '@/utils/course';
+import { partAt, splitCaptionParts } from '@/utils/captionParts';
 import { formatTime } from '@/utils';
 import { OUTRO_TEXT, WALKTHROUGH_TIMING } from '@/constants';
 import { isClickStep, transitionFor } from './timeline';
@@ -88,9 +98,33 @@ function toPixels(stage, r, pad = 0) {
   };
 }
 
-/** Splits text into lines no wider than maxWidth (max `maxLines`, with …). */
-function wrapText(ctx, text, maxWidth, maxLines) {
-  const words = (text || '').split(/\s+/).filter(Boolean);
+/** A word wider than maxWidth (e.g. a long link), broken into pieces that fit. */
+function breakWord(ctx, word, maxWidth) {
+  if (ctx.measureText(word).width <= maxWidth) return [word];
+  const pieces = [];
+  let piece = '';
+  for (const char of word) {
+    if (piece && ctx.measureText(piece + char).width > maxWidth) {
+      pieces.push(piece);
+      piece = char;
+    } else {
+      piece += char;
+    }
+  }
+  if (piece) pieces.push(piece);
+  return pieces;
+}
+
+/**
+ * Splits text into lines no wider than maxWidth (max `maxLines`, with …).
+ * `breakLong`: a word wider than a line is broken (Mobile captions, which keep
+ * every word and have no `maxLines`).
+ */
+function wrapText(ctx, text, maxWidth, maxLines = Infinity, breakLong = false) {
+  const words = (text || '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .flatMap((word) => (breakLong ? breakWord(ctx, word, maxWidth) : [word]));
   const lines = [];
   let line = '';
   for (const word of words) {
@@ -167,29 +201,123 @@ function drawRipples(ctx, x, y, elapsed) {
   }
 }
 
+/**
+ * Where things go in a frame. Web: as always. Mobile: thin margins, small
+ * title and progress bar, so the picture fills the phone's screen.
+ */
+const WEB_GEO = {
+  mobile: false,
+  side: 40,
+  top: 68,
+  bottom: 56,
+  title: { x: 40, y: 34, size: 18 },
+  bar: { x: 40, bottom: 26 },
+  bounds: { side: 16, top: 60, bottom: 40 },
+};
+const MOBILE_GEO = {
+  mobile: true,
+  side: 8,
+  top: 38,
+  bottom: 22,
+  title: { x: 12, y: 19, size: 14 },
+  bar: { x: 12, bottom: 11 },
+  bounds: { side: 8, top: 34, bottom: 20 },
+};
+
 const CAPTION_PAD = 18;
 const CAPTION_BADGE = 28;
+const LABEL_LINE = 21;
+/** Description font sizes to try (px), largest first, and the lines each part may use. */
+const CAPTION_TEXT_SIZES = [15, 14, 13, 12];
+const CAPTION_MAX_LINES = 5;
+/** Room for the "part 2 of 3" dots under the text. */
+const PART_DOTS_SPACE = 14;
 
-/** Caption layout: wrapped lines and the card's height for a given width. */
-function layoutCaption(ctx, { width, label, text }) {
-  const textWidth = width - (CAPTION_PAD + CAPTION_BADGE + 12) - CAPTION_PAD;
-  ctx.save();
-  ctx.font = `600 17px ${FONT}`;
-  const labelLines = label ? wrapText(ctx, label, textWidth, 2) : [];
-  ctx.font = `400 15px ${FONT}`;
-  const textLines = text ? wrapText(ctx, text, textWidth, 3) : [];
-  ctx.restore();
-  const height =
-    CAPTION_PAD * 2 + Math.max(CAPTION_BADGE, labelLines.length * 22 + textLines.length * 21);
-  return { labelLines, textLines, height };
+/** Mobile: the caption parts of a step (exportVideo passes them; else made from the text). */
+const partsOf = (step) => step.captionParts ?? splitCaptionParts(step.text);
+
+/** Mobile: the part the caption shows in this phase: the one being said, later the last. */
+function captionPartFor(step, phase, elapsed) {
+  const count = partsOf(step).length;
+  if (count < 2) return 0;
+  if (phase === 'narrate') return partAt(step.captionPartStarts ?? [0], elapsed);
+  return ['action', 'done', 'exit'].includes(phase) ? count - 1 : 0;
 }
 
-/** Caption card: number badge, label, description. Returns its height. */
-function drawCaption(ctx, { x, y, width, stepNumber, label, text, alpha }) {
+/**
+ * Caption layout for a given width: wrapped lines and the card's height.
+ * Web: label up to 2 lines, text up to 3 (then …), as always.
+ * Mobile: every part wrapped in the largest font that fits each part in
+ * CAPTION_MAX_LINES (smallest font: as many lines as needed — nothing is ever
+ * cut). The card is as tall as its LONGEST part, so it keeps its size and
+ * place while the parts change.
+ */
+function layoutCaption(ctx, { width, step, mobile }) {
+  const { label } = step;
+  const textWidth = width - (CAPTION_PAD + CAPTION_BADGE + 12) - CAPTION_PAD;
+  if (!mobile) {
+    const { text } = step;
+    ctx.save();
+    ctx.font = `600 17px ${FONT}`;
+    const labelLines = label ? wrapText(ctx, label, textWidth, 2) : [];
+    ctx.font = `400 15px ${FONT}`;
+    const textLines = text ? wrapText(ctx, text, textWidth, 3) : [];
+    ctx.restore();
+    const height =
+      CAPTION_PAD * 2 + Math.max(CAPTION_BADGE, labelLines.length * 22 + textLines.length * 21);
+    return {
+      labelLines,
+      labelFont: `600 17px ${FONT}`,
+      labelLine: 22,
+      partLines: [textLines],
+      textSize: 15,
+      lineHeight: 21,
+      parts: [text],
+      height,
+    };
+  }
+  const parts = partsOf(step);
+  ctx.save();
+  ctx.font = `600 16px ${FONT}`;
+  const labelLines = label ? wrapText(ctx, label, textWidth, Infinity, true) : [];
+  let textSize = CAPTION_TEXT_SIZES[0];
+  let partLines = [];
+  for (const size of CAPTION_TEXT_SIZES) {
+    textSize = size;
+    ctx.font = `400 ${size}px ${FONT}`;
+    partLines = parts.map((part) => wrapText(ctx, part, textWidth, Infinity, true));
+    if (Math.max(0, ...partLines.map((lines) => lines.length)) <= CAPTION_MAX_LINES) break;
+  }
+  ctx.restore();
+  const lineHeight = Math.round(textSize * 1.4);
+  const maxLines = Math.max(0, ...partLines.map((lines) => lines.length));
+  const dots = parts.length > 1 ? PART_DOTS_SPACE : 0;
+  const height =
+    CAPTION_PAD * 2 +
+    Math.max(CAPTION_BADGE, labelLines.length * LABEL_LINE + maxLines * lineHeight + dots);
+  return {
+    labelLines,
+    labelFont: `600 16px ${FONT}`,
+    labelLine: LABEL_LINE,
+    partLines,
+    textSize,
+    lineHeight,
+    parts,
+    height,
+  };
+}
+
+/**
+ * Caption card: number badge, label, description (Mobile: the part being
+ * said, `part`). Returns its height.
+ */
+function drawCaption(ctx, { x, y, width, stepNumber, step, mobile, part = 0, alpha }) {
   const pad = CAPTION_PAD;
   const badge = CAPTION_BADGE;
   const textX = x + pad + badge + 12;
-  const { labelLines, textLines, height } = layoutCaption(ctx, { width, label, text });
+  const { labelLines, labelFont, labelLine, partLines, textSize, lineHeight, parts, height } =
+    layoutCaption(ctx, { width, step, mobile });
+  const current = Math.min(part, Math.max(0, parts.length - 1));
 
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -220,26 +348,48 @@ function drawCaption(ctx, { x, y, width, stepNumber, label, text, alpha }) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   let lineY = y + pad + 2;
-  ctx.font = `600 17px ${FONT}`;
+  ctx.font = labelFont;
   ctx.fillStyle = COLORS.textStrong;
   for (const line of labelLines) {
     ctx.fillText(line, textX, lineY);
-    lineY += 22;
+    lineY += labelLine;
   }
-  ctx.font = `400 15px ${FONT}`;
+  ctx.font = `400 ${textSize}px ${FONT}`;
   ctx.fillStyle = COLORS.textSoft;
-  for (const line of textLines) {
+  for (const line of partLines[current] ?? []) {
     ctx.fillText(line, textX, lineY);
-    lineY += 21;
+    lineY += lineHeight;
+  }
+
+  // Mobile: which part this is: one dot per part, the current one long (bottom of the card).
+  if (mobile && parts.length > 1) {
+    let dotX = textX;
+    const dotY = y + height - pad - 4;
+    parts.forEach((_, k) => {
+      const w = k === current ? 12 : 4;
+      roundRectPath(ctx, dotX, dotY, w, 4, 2);
+      ctx.fillStyle = k === current ? COLORS.accent : 'rgba(161,161,170,0.4)';
+      ctx.fill();
+      dotX += w + 4;
+    });
   }
   ctx.restore();
   return height;
 }
 
-/** Caption card width for a stage (px). */
-const captionWidthFor = (stage) => Math.min(420, stage.w * 0.8);
+/**
+ * Caption card width (px). Web: from the stage. Mobile: from the frame, so a
+ * narrow phone screenshot in a landscape video still gets a readable card.
+ */
+const captionWidthFor = (stage, width, geo) =>
+  geo.mobile ? Math.min(380, width * 0.8) : Math.min(420, stage.w * 0.8);
 /** Where the caption may go: the whole frame between the title and the progress bar. */
-const captionBounds = (width, height) => ({ x: 16, y: 60, w: width - 32, h: height - 60 - 40 });
+const captionBounds = (width, height, geo) => ({
+  x: geo.bounds.side,
+  y: geo.bounds.top,
+  w: width - geo.bounds.side * 2,
+  h: height - geo.bounds.top - geo.bounds.bottom,
+});
 const CAPTION_GAP = 18 + SPOTLIGHT_PADDING;
 
 /**
@@ -247,14 +397,14 @@ const CAPTION_GAP = 18 + SPOTLIGHT_PADDING;
  * as needed for its caption to fit beside the feature (same rule as the live
  * player — utils/captionPlacement.captionAwareView).
  */
-function stepFocusView(ctx, step, stage, width, height) {
-  const captionWidth = captionWidthFor(stage);
+function stepFocusView(ctx, step, stage, width, height, geo) {
+  const captionWidth = captionWidthFor(stage, width, geo);
   const { height: captionHeight } = layoutCaption(ctx, {
     width: captionWidth,
-    label: step.label,
-    text: step.text,
+    step,
+    mobile: geo.mobile,
   });
-  const bounds = captionBounds(width, height);
+  const bounds = captionBounds(width, height, geo);
   return captionAwareView({
     region: getFocusRegion(step),
     stage: { w: stage.w, h: stage.h },
@@ -358,6 +508,7 @@ function drawTypingField(ctx, { box: area, value, time, alpha }) {
  */
 export function renderFrame(ctx, frame) {
   const { width, height, title, steps, images, segment, elapsed, time, total } = frame;
+  const geo = frame.mobile ? MOBILE_GEO : WEB_GEO;
   const i = segment.stepIndex;
   const starts = frame.segments ? stepStarts(frame.segments, steps.length) : null;
   // STEPS PANEL — disabled for now (kept for later): the downloaded video shows
@@ -370,12 +521,14 @@ export function renderFrame(ctx, frame) {
   // Background + title + one continuous progress bar, divided per step.
   ctx.fillStyle = COLORS.background;
   ctx.fillRect(0, 0, width, height);
-  ctx.font = `600 18px ${FONT}`;
+  ctx.font = `600 ${geo.title.size}px ${FONT}`;
   ctx.fillStyle = COLORS.textStrong;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-  ctx.fillText(title, 40, 34);
-  drawProgressBar(ctx, width, height, time, total, starts);
+  // (Mobile: a narrow screen — a long title is shortened to one line.)
+  const titleText = geo.mobile ? clipLine(ctx, title, width - geo.title.x * 2) : title;
+  ctx.fillText(titleText, geo.title.x, geo.title.y);
+  drawProgressBar(ctx, width, height, time, total, starts, geo);
 
   const layer = (index, phase, layerElapsed, extra = {}) =>
     drawStep(ctx, {
@@ -390,6 +543,7 @@ export function renderFrame(ctx, frame) {
       time,
       enterOrigin: null,
       continued: false,
+      geo,
       ...extra,
     });
 
@@ -408,7 +562,7 @@ export function renderFrame(ctx, frame) {
   // }
   // Ending: a warm "you're all set" card over the last frame.
   if (segment.phase === 'done' && elapsed > OUTRO_DELAY_MS) {
-    drawOutro(ctx, width, height, elapsed - OUTRO_DELAY_MS, title, steps.length);
+    drawOutro(ctx, width, height, elapsed - OUTRO_DELAY_MS, title, steps.length, geo);
   }
 }
 
@@ -419,7 +573,7 @@ const OUTRO_DELAY_MS = 900;
  * Ending card: the screen dims, a check mark draws itself inside a glowing
  * circle, sparkles drift up, then "You're all set!" + what was learned.
  */
-function drawOutro(ctx, width, height, t, title, stepCount) {
+function drawOutro(ctx, width, height, t, title, stepCount, geo) {
   const fade = easeOut(within(t, 600));
   ctx.save();
   ctx.fillStyle = `rgba(9, 9, 11, ${0.78 * fade})`;
@@ -491,7 +645,8 @@ function drawOutro(ctx, width, height, t, title, stepCount) {
   ctx.fillText(OUTRO_TEXT.heading, cx, cy + 110 + 14 * (1 - textIn));
   ctx.font = `500 20px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.78)';
-  const learned = wrapText(ctx, OUTRO_TEXT.learned(title), width - 240, 2);
+  // (Mobile: a narrow portrait screen needs the full width for this line.)
+  const learned = wrapText(ctx, OUTRO_TEXT.learned(title), width - (geo.mobile ? 48 : 240), 2);
   learned.forEach((line, n) => ctx.fillText(line, cx, cy + 160 + n * 28 + 10 * (1 - textIn)));
   const tagIn = easeOut(within(t - 1300, 700));
   ctx.globalAlpha = fade * tagIn;
@@ -503,28 +658,34 @@ function drawOutro(ctx, width, height, t, title, stepCount) {
 
 /** One step's screen, camera, spotlight, pointer and caption for one phase. */
 function drawStep(ctx, layer) {
-  const { width, height, step, prev, stepNumber, image, phase, elapsed, time } = layer;
+  const { width, height, step, prev, stepNumber, image, phase, elapsed, time, geo } = layer;
   const showCaption = ['narrate', 'action', 'done'].includes(phase);
   const captionAlpha = phase === 'narrate' ? easeOut(within(elapsed, 450)) : 1;
 
   // Text-only step
   if (!image) {
-    const cardWidth = Math.min(620, width - 120);
+    const cardWidth = Math.min(620, width - (geo.mobile ? 32 : 120));
     const enterAlpha = phase === 'enter' ? easeOut(within(elapsed, 650)) : 1;
     drawCaption(ctx, {
       x: (width - cardWidth) / 2,
       y: height / 2 - 60,
       width: cardWidth,
       stepNumber,
-      label: step.label,
-      text: step.text,
+      step,
+      mobile: geo.mobile,
+      part: geo.mobile ? captionPartFor(step, phase, elapsed) : 0,
       alpha: enterAlpha * (phase === 'exit' ? 1 - within(elapsed, 450) : 1),
     });
     return;
   }
 
   // Stage rectangle: largest box with the image's ratio inside the frame.
-  const area = { x: 40, y: 68, w: width - 80, h: height - 68 - 56 };
+  const area = {
+    x: geo.side,
+    y: geo.top,
+    w: width - geo.side * 2,
+    h: height - geo.top - geo.bottom,
+  };
   const stageW = Math.min(area.w, area.h * image.ratio);
   const stageH = stageW / image.ratio;
   const stage = {
@@ -538,7 +699,7 @@ function drawStep(ctx, layer) {
   const targets = getStepTargets(step);
   const region = getFocusRegion(step);
   const isClick = isClickStep(step);
-  const focusView = region ? stepFocusView(ctx, step, stage, width, height) : OVERVIEW_VIEW;
+  const focusView = region ? stepFocusView(ctx, step, stage, width, height, geo) : OVERVIEW_VIEW;
   // The pointer clicks every target in turn: one press per WALKTHROUGH_TIMING.clickAction.
   const clickPoints = targets.map((t) => regionCenter(projectRegion(t, focusView)));
   const lastClick = Math.max(0, clickPoints.length - 1);
@@ -556,7 +717,7 @@ function drawStep(ctx, layer) {
   // Camera view + spotlight strength for this phase.
   // (only used when `prev` shows the same screenshot, i.e. the same stage)
   const prevView = getFocusRegion(prev)
-    ? stepFocusView(ctx, prev, stage, width, height)
+    ? stepFocusView(ctx, prev, stage, width, height, geo)
     : OVERVIEW_VIEW;
   const prevSingle = getStepTargets(prev).length === 1;
   let view = OVERVIEW_VIEW;
@@ -761,11 +922,11 @@ function drawStep(ctx, layer) {
   // Caption next to the feature, never covering it (same rule as the live
   // player: utils/captionPlacement, using the caption's real height).
   if (showCaption) {
-    const captionWidth = captionWidthFor(stage);
+    const captionWidth = captionWidthFor(stage, width, geo);
     const { height: captionHeight } = layoutCaption(ctx, {
       width: captionWidth,
-      label: step.label,
-      text: step.text,
+      step,
+      mobile: geo.mobile,
     });
     let cx = stage.x + stage.w / 2 - captionWidth / 2;
     let cy = stage.y + stage.h - 150;
@@ -773,7 +934,7 @@ function drawStep(ctx, layer) {
       const placed = placeCaption({
         anchor: toPixels(stage, projectRegion(region, focusView)),
         size: { w: captionWidth, h: captionHeight },
-        bounds: captionBounds(width, height),
+        bounds: captionBounds(width, height, geo),
         gap: CAPTION_GAP,
       });
       cx = placed.x;
@@ -785,8 +946,9 @@ function drawStep(ctx, layer) {
       y: cy + lift,
       width: captionWidth,
       stepNumber,
-      label: step.label,
-      text: step.text,
+      step,
+      mobile: geo.mobile,
+      part: geo.mobile ? captionPartFor(step, phase, elapsed) : 0,
       alpha: captionAlpha * stageAlpha,
     });
   }
@@ -798,10 +960,10 @@ function drawStep(ctx, layer) {
  * where steps begin), like the player's timeline.
  * @param {number[] | null} starts  ms at which each step begins
  */
-function drawProgressBar(ctx, width, height, time, total, starts) {
-  const x = 40;
-  const w = width - 80;
-  const y = height - 26;
+function drawProgressBar(ctx, width, height, time, total, starts, geo) {
+  const x = geo.bar.x;
+  const w = width - geo.bar.x * 2;
+  const y = height - geo.bar.bottom;
   const fraction = total ? clamp01(time / total) : 0;
   const edges = starts && total ? [...starts.map((t) => t / total), 1] : [0, 1];
   for (let k = 0; k < edges.length - 1; k++) {

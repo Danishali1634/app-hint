@@ -405,6 +405,18 @@ export function CourseEditorPage() {
     [course, updateCourse],
   );
 
+  /** Moves the step at `from` to `to` inside its Global Step (StepRail drag & drop). */
+  const reorderFeature = useCallback(
+    (from, to) => {
+      if (!course) return;
+      const steps = [...course.steps];
+      const [moved] = steps.splice(from, 1);
+      steps.splice(to, 0, moved);
+      updateCourse({ steps: renumberDefaultLabels(steps) });
+    },
+    [course, updateCourse],
+  );
+
   /** The Global Step (all its sub-steps) that contains the step at `index`. */
   const unitOf = (index) => stepUnits.find((u) => index >= u.start && index <= u.end);
 
@@ -1071,6 +1083,7 @@ export function CourseEditorPage() {
                 onDelete={requestDeleteStep}
                 onDeleteUnit={requestDeleteUnit}
                 onReorder={reorderSteps}
+                onReorderFeature={reorderFeature}
                 onHover={setRailHover}
                 maxSteps={MAX_STEPS}
                 fallbackImageId={course.baseImageId ?? null}

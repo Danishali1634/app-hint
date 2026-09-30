@@ -14,7 +14,9 @@
  *   cursor     animated mouse pointer that glides in and clicks  ('click' steps;
  *              with several targets it clicks them one after another)
  *   typing     the value being typed into the area, with a caret  ('type' steps)
- *   caption    step number, label, text, "speaking" indicator
+ *   caption    step number, label, text, "speaking" indicator. Mobile view:
+ *              a long text is shown in parts (utils/captionParts), each while
+ *              the voice says it — never cut off with "…"
  *
  * WHAT EACH PHASE SHOWS
  *   enter     screenshot appears (grows out of the previous click, or fades in)
@@ -36,6 +38,7 @@ import { Mic, Volume2 } from 'lucide-react';
 import { formatDuration } from '@/utils';
 import { captionAwareView, placeCaption } from '@/utils/captionPlacement';
 import { getFocusRegion, getStepTargets, isClickAction } from '@/utils/course';
+import { splitCaptionParts } from '@/utils/captionParts';
 import { WALKTHROUGH_TIMING } from '@/constants';
 import {
   OVERVIEW_VIEW,
@@ -621,11 +624,63 @@ function FloatingCaption({ anchor, stageWidth, stageHeight, layout, size, compac
 }
 
 /**
+ * The description, one caption part at a time (`part` = the one being said).
+ * Every part is laid out in the same grid cell, so the card keeps the size of
+ * its longest part and never jumps; dots show which part this is.
+ */
+function CaptionText({ text, part = 0, className, lead = null }) {
+  const parts = splitCaptionParts(text);
+  if (parts.length <= 1) {
+    return (
+      <p className={className}>
+        {lead}
+        {parts[0] ?? ''}
+      </p>
+    );
+  }
+  const current = Math.min(Math.max(0, part), parts.length - 1);
+  return (
+    <div>
+      <div className="grid">
+        {parts.map((p, k) => (
+          <p
+            key={k}
+            aria-hidden={k !== current}
+            className={`${className} [grid-area:1/1] transition-opacity duration-200 ${
+              k === current ? 'opacity-100' : 'opacity-0'
+            }`}
+          >
+            {lead}
+            {p}
+          </p>
+        ))}
+      </div>
+      <div
+        className="mt-1.5 flex items-center gap-1"
+        aria-label={`Part ${current + 1} of ${parts.length}`}
+      >
+        {parts.map((_, k) => (
+          <span
+            key={k}
+            className={`h-1 rounded-full transition-all duration-200 ${
+              k === current ? 'w-3 bg-accent' : 'w-1 bg-ink-faint/40 dark:bg-ink-faint-dark/40'
+            }`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
  * The caption card: numbered badge, label, description, speaking indicator.
  * Exported so the player can dock it under the stage on small screens.
  */
 export function CaptionContent({ step, stepNumber, narration, compact = false }) {
-  if (compact) {
+  // Mobile view: a long description in parts, each while the voice says it,
+  // smaller font, never cut off. Web view: the whole description, as always.
+  const inParts = !!narration.captionParts;
+  if (compact && !inParts) {
     // Small embeds: one tight row, text clamped to two lines.
     return (
       <div className="flex items-start gap-2 rounded-xl bg-panel/95 dark:bg-panel-dark/95 backdrop-blur-md border border-line dark:border-line-dark shadow-xl px-2.5 py-2">
@@ -636,6 +691,24 @@ export function CaptionContent({ step, stepNumber, narration, compact = false })
           {step.label && <strong className="font-semibold">{step.label}. </strong>}
           {step.text}
         </p>
+      </div>
+    );
+  }
+  if (compact) {
+    // Small embeds, Mobile view: one tight row, small text (in parts, never cut).
+    return (
+      <div className="flex items-start gap-2 rounded-xl bg-panel/95 dark:bg-panel-dark/95 backdrop-blur-md border border-line dark:border-line-dark shadow-xl px-2.5 py-2">
+        <span className="w-5 h-5 rounded-full bg-accent text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">
+          {stepNumber}
+        </span>
+        <div className="min-w-0 flex-1">
+          <CaptionText
+            text={step.text}
+            part={narration.part}
+            className="text-[11px] leading-snug text-ink dark:text-ink-soft-dark break-words"
+            lead={step.label && <strong className="font-semibold">{step.label}. </strong>}
+          />
+        </div>
       </div>
     );
   }
@@ -652,11 +725,21 @@ export function CaptionContent({ step, stepNumber, narration, compact = false })
               {step.label}
             </p>
           )}
-          {step.text && (
-            <p className="text-sm text-ink-soft dark:text-ink-soft-dark leading-relaxed mt-0.5">
-              {step.text}
-            </p>
-          )}
+          {inParts
+            ? step.text?.trim() && (
+                <div className="mt-0.5">
+                  <CaptionText
+                    text={step.text}
+                    part={narration.part}
+                    className="text-[13px] text-ink-soft dark:text-ink-soft-dark leading-snug break-words"
+                  />
+                </div>
+              )
+            : step.text && (
+                <p className="text-sm text-ink-soft dark:text-ink-soft-dark leading-relaxed mt-0.5">
+                  {step.text}
+                </p>
+              )}
         </div>
       </div>
       {narration.mode !== 'none' && (

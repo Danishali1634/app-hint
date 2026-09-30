@@ -12,13 +12,6 @@ export const CONTEXT_LABELS = {
   mobile_app: 'A mobile app screen',
 };
 
-/** Options rendered as buttons on the New Course page. */
-export const CONTEXT_OPTIONS = [
-  { value: 'page_feature', label: 'A feature on a page' },
-  { value: 'full_page', label: 'A whole page' },
-  { value: 'mobile_app', label: 'A mobile app screen' },
-];
-
 // ─── Course status badge ─────────────────────────────────────────────────────
 
 export const STATUS_LABELS = {

@@ -15,10 +15,11 @@
  *     "Next step on this picture" adds another step on the SAME frame (same
  *     imageId and moment) and opens it right away; "Done, back to video"
  *     returns to the video at that moment.
- *   - ORDER: video time, then `seq` (creation order), so steps on one picture
- *     keep the order they were made in. Old drafts without seq count as 0.
- *   - The steps list (right) is always in video order, renumbered and grouped
- *     by picture.
+ *   - ORDER: the order of the steps list (right). A new step goes in at its
+ *     moment in the video (right after the other steps on the same picture);
+ *     after that the author can drag any step anywhere in the list (e.g. the
+ *     first to the end). The list is renumbered and grouped by picture (runs
+ *     of neighbouring steps on the same picture).
  *   - A GuideBar above the video / picture always names the ONE next action.
  *   - A guided tour (components/tutorial/GuidedTour) explains the page the
  *     first time, and again from the "?" button.
@@ -26,13 +27,28 @@
  * DRAFT vs SAVE: work in progress is autosaved (debounced) to
  * `course.videoDraftSteps`, so a refresh loses nothing, but `course.steps` is
  * only written by "Save walkthrough", the one explicit finish action. Save puts
- * the steps in video order as ONE screen: every step is a nested step of it
+ * the steps in list order as ONE screen: every step is a nested step of it
  * (one groupId, see utils/course), each keeping its own frame as that step's
  * screenshot. So the player glides from step to step (focus shift) instead of
  * opening a new screen each time. Save refuses while a step has no box (that
  * step opens and the GuideBar says so). Then the builder closes and the saved
  * walkthrough opens on its watch page (#/preview/:id?saved=1), replacing the
  * builder in history so Back never returns into it.
+ *
+ * QUICK EDIT: right after a box is drawn, a small card floats next to it
+ *   (VideoTourParts QuickStepEditor via TargetCanvas `boxEditor`): Click /
+ *   Look / Type and the description, typed right there, Enter to finish. It
+ *   edits the same step as the side panel, which stays in sync and keeps
+ *   everything else (Improve, Listen, next feature…). Clicking the caption
+ *   bubble opens the card again.
+ *
+ * CUTS: "Cut a part" puts a red part on the scrubber at the current moment;
+ *   drag its two handles (the video previews the frame under the handle),
+ *   then "Remove". Clicking a striped (cut) part puts it back
+ *   (services/video/cuts). Non-destructive: the ranges are saved on
+ *   `course.videoCuts`, the player skips them, seeking into one lands after it,
+ *   and each can be restored. Features inside a new cut are removed with it
+ *   (after a confirm). Replacing the video clears the cuts.
  *
  * LENGTH: the walkthrough is made from the captured frames plus their
  * descriptions, not from the video itself, so it ends at the last step and its
@@ -48,6 +64,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Plus, HelpCircle, RefreshCw, Save, PlayCircle } from 'lucide-react';
 import { getCourse, saveCourse, putMedia, getMedia, deleteMedia } from '@/services/storage/db';
 import { resolveVideoDuration } from '@/services/video/screenRecorder';
+import { addCut, cutAt, normalizeCuts, reachesEnd, snapOutOfCuts } from '@/services/video/cuts';
 import { TargetCanvas } from '@/components/course/TargetCanvas';
 import { GuidedTour } from '@/components/tutorial/GuidedTour';
 import { TutorialDialog } from '@/components/tutorial/TutorialDialog';
@@ -72,6 +89,8 @@ import {
   BackToVideoButton,
   GuideBar,
   VideoControls,
+  VideoCutBar,
+  QuickStepEditor,
   VideoStepList,
   VideoStepPanel,
 } from './VideoTourParts';
@@ -84,6 +103,8 @@ const TOUR_DONE_KEY = 'hs-video-tour-done';
 /** The editor's first-visit tour; marked done so it doesn't cover the "ready" dialog. */
 const EDITOR_TOUR_DONE_KEY = 'hs-editor-tour-done';
 const FRAME_QUALITY = 0.92;
+/** Length of the red part "Cut a part" starts with, seconds. */
+const DEFAULT_CUT_SEC = 3;
 
 const TOUR_STEPS = [
   {
@@ -105,15 +126,22 @@ const ICON_BUTTON_CLASS =
 
 const hasVideoTime = (step) => typeof step.videoTime === 'number';
 
-/** Video order; steps at the same moment keep the order they were made in (seq). */
-const sortByTime = (steps) =>
-  [...steps].sort((a, b) => a.videoTime - b.videoTime || (a.seq || 0) - (b.seq || 0));
+/**
+ * Puts a new step in at its moment in the video: right after the last step at
+ * the same moment (same picture), else before the first step later in the
+ * video, else at the end. Steps the author dragged elsewhere stay where they are.
+ */
+function insertByTime(steps, step) {
+  let at = steps.findLastIndex((s) => s.videoTime === step.videoTime) + 1;
+  if (at === 0) {
+    at = steps.findIndex((s) => s.videoTime > step.videoTime);
+    if (at < 0) at = steps.length;
+  }
+  return [...steps.slice(0, at), step, ...steps.slice(at)];
+}
 
-/** The next creation number (always above every existing step's). */
-const nextSeq = (steps) => steps.reduce((max, s) => Math.max(max, s.seq || 0), 0) + 1;
-
-/** Draft steps: video order, labelled Step 1, 2, 3 … */
-const tidy = (steps) => sortByTime(steps).map((s, i) => ({ ...s, label: `Step ${i + 1}` }));
+/** Draft steps, in list order, labelled Step 1, 2, 3 … */
+const tidy = (steps) => steps.map((s, i) => ({ ...s, label: `Step ${i + 1}` }));
 
 function readTourDone() {
   try {
@@ -245,9 +273,10 @@ export function VideoTourPage() {
       changeSteps={changeSteps}
       stepsRef={stepsRef}
       saveDraft={saveDraft}
+      onChangeCuts={(videoCuts) => updateCourse({ videoCuts })}
       onReplaceVideo={async () => {
         const old = courseRef.current.sourceVideoId;
-        await updateCourse({ sourceVideoId: null, sourceVideoDuration: null });
+        await updateCourse({ sourceVideoId: null, sourceVideoDuration: null, videoCuts: null });
         if (old) deleteMedia(old);
       }}
       onSave={async () => {
@@ -264,7 +293,7 @@ export function VideoTourPage() {
 }
 
 /**
- * The one real save: draft steps → course.steps, in video order, as ONE screen
+ * The one real save: draft steps → course.steps, in list order, as ONE screen
  * (a recording is one continuous page): all steps share a groupId, each keeps
  * its own frame. A single step needs no group. Media no longer used by
  * anything is deleted.
@@ -273,9 +302,8 @@ export function VideoTourPage() {
  * @returns {Promise<Course>}
  */
 async function saveWalkthrough(course, draft) {
-  const sorted = sortByTime(draft);
-  const groupId = sorted.length > 1 ? nextId('group') : null;
-  const built = sorted.map((step) => ({ ...step, groupId }));
+  const groupId = draft.length > 1 ? nextId('group') : null;
+  const built = draft.map((step) => ({ ...step, groupId }));
   // Screenshot steps (no video time) are kept where they are: the video steps
   // replace the old video block in place, or go at the end the first time
   // (e.g. a screenshot course that now adds steps from a recording).
@@ -309,6 +337,7 @@ async function saveWalkthrough(course, draft) {
  *   stepsRef: { current: Step[] },
  *   changeSteps: (update: Step[] | ((prev: Step[]) => Step[])) => void,
  *   saveDraft: (draft: Step[]) => Promise<void>,
+ *   onChangeCuts: (cuts: import('@/services/video/cuts').VideoCut[]) => Promise<void>,
  *   onReplaceVideo: () => Promise<void>,
  *   onSave: () => Promise<void>,
  * }} props
@@ -320,6 +349,7 @@ function TourBuilder({
   stepsRef,
   changeSteps,
   saveDraft,
+  onChangeCuts,
   onReplaceVideo,
   onSave,
 }) {
@@ -339,6 +369,9 @@ function TourBuilder({
   const [confirmReplace, setConfirmReplace] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problemId, setProblemId] = useState(null); // step that blocked Save (no box)
+  const [cutRange, setCutRange] = useState(null); // { start, end } being chosen for cutting
+  const [quickEditId, setQuickEditId] = useState(null); // step whose floating card is open
+  const [confirmCut, setConfirmCut] = useState(null); // { cuts, inside: Step[] } awaiting OK
 
   // The recording as an object URL.
   useEffect(() => {
@@ -370,18 +403,34 @@ function TourBuilder({
   const editingNumber = editing ? steps.indexOf(editing) + 1 : 0;
   const targets = editing ? getStepTargets(editing) : [];
   const readyCount = steps.filter((s) => getStepTargets(s).length > 0).length;
+  const cuts = useMemo(
+    () => normalizeCuts(course.videoCuts, duration),
+    [course.videoCuts, duration],
+  );
+  const cutsRef = useRef(cuts);
+  cutsRef.current = cuts;
 
-  // Smooth scrubber while playing.
+  // Smooth scrubber while playing; cut parts are jumped over.
   useEffect(() => {
     if (!playing) return;
     let frame = 0;
     const tick = () => {
-      if (videoRef.current) setTime(videoRef.current.currentTime);
+      const video = videoRef.current;
+      if (video) {
+        const cut = cutAt(cutsRef.current, video.currentTime);
+        if (cut && reachesEnd(cut, video.duration || duration)) {
+          video.pause();
+          video.currentTime = snapOutOfCuts(cutsRef.current, video.currentTime, duration);
+        } else if (cut) {
+          video.currentTime = cut.end;
+        }
+        setTime(video.currentTime);
+      }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playing]);
+  }, [playing, duration]);
 
   // First visit: the guided tour.
   useEffect(() => {
@@ -405,16 +454,24 @@ function TourBuilder({
     (seconds) => {
       const video = videoRef.current;
       if (!video) return;
-      const t = Math.min(duration || seconds, Math.max(0, seconds));
+      const t = snapOutOfCuts(
+        cutsRef.current,
+        Math.min(duration || seconds, Math.max(0, seconds)),
+        duration,
+      );
       video.currentTime = t;
       setTime(t);
     },
     [duration],
   );
 
-  // Space toggles play (not while typing or editing a step).
+  // Space toggles play (not while typing or editing a step); Esc stops marking a cut.
   useEffect(() => {
     const handleKey = (e) => {
+      if (e.key === 'Escape' && cutRange && !tourOpen) {
+        setCutRange(null);
+        return;
+      }
       if (e.code !== 'Space' || editingId || tourOpen) return;
       const el = e.target;
       if (el?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
@@ -423,7 +480,7 @@ function TourBuilder({
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [editingId, tourOpen, togglePlay]);
+  }, [editingId, tourOpen, togglePlay, cutRange]);
 
   const handleMetadata = async () => {
     const video = videoRef.current;
@@ -431,7 +488,10 @@ function TourBuilder({
     const real = await resolveVideoDuration(video, course.sourceVideoDuration || 0);
     resolvingRef.current = false;
     setDuration(real);
-    setTime(0);
+    // Start on the first moment that isn't cut.
+    const start = snapOutOfCuts(normalizeCuts(course.videoCuts, real), 0, real);
+    video.currentTime = start;
+    setTime(start);
     setReady(true);
   };
 
@@ -470,10 +530,9 @@ function TourBuilder({
       action: 'click',
       audioId: null,
       videoTime,
-      seq: nextSeq(prev),
       ...(region ? withTargets([region]) : {}),
     };
-    changeSteps([...prev, step]);
+    changeSteps(insertByTime(prev, step));
     const cameFrom = editingId;
     setEditingId(step.id);
     // A box drawn on a picture that already has one adds a feature by itself, so
@@ -490,6 +549,7 @@ function TourBuilder({
         },
       });
     }
+    return step.id;
   };
 
   /** "Next step on this picture": same frame, same moment, a separate step. */
@@ -511,25 +571,94 @@ function TourBuilder({
   const updateStep = (id, patch) =>
     changeSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
 
-  const deleteStep = async (step) => {
-    const rest = stepsRef.current.filter((s) => s.id !== step.id);
+  const deleteSteps = async (gone) => {
+    const ids = new Set(gone.map((s) => s.id));
+    const rest = stepsRef.current.filter((s) => !ids.has(s.id));
     changeSteps(rest);
-    if (editingId === step.id) setEditingId(null);
-    // Delete the picture once nothing uses it (another step, or the saved course).
-    const id = step.imageId;
-    if (id && !rest.some((s) => s.imageId === id) && !isMediaInUse(courseRef.current, id)) {
+    if (ids.has(editingId)) setEditingId(null);
+    // Delete a picture once nothing uses it (another step, or the saved course).
+    const unused = [...new Set(gone.map((s) => s.imageId))].filter(
+      (id) => id && !rest.some((s) => s.imageId === id) && !isMediaInUse(courseRef.current, id),
+    );
+    if (unused.length) {
       await saveDraft(stepsRef.current);
-      deleteMedia(id);
+      unused.forEach(deleteMedia);
     }
   };
+  const deleteStep = (step) => deleteSteps([step]);
+
+  /** Drag & drop in the list: the step at position `from` goes to position `to`. */
+  const moveStep = (from, to) => {
+    if (from === to) return;
+    changeSteps((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+
+  // ── Cutting the video ──
+  /** A red part of a few seconds from here (or ending at the end), handles to adjust. */
+  const startCut = () => {
+    pause();
+    const now = videoRef.current?.currentTime ?? time;
+    const length = Math.min(DEFAULT_CUT_SEC, duration);
+    const start = Math.max(0, Math.min(now, duration - length));
+    setCutRange({ start, end: start + length });
+  };
+
+  /** A handle moved: show the frame under it, so the user sees where the cut is. */
+  const changeCutRange = (range, moved) => {
+    setCutRange(range);
+    const video = videoRef.current;
+    if (video) video.currentTime = range[moved];
+    setTime(range[moved]);
+  };
+
+  const applyCut = () => {
+    if (!cutRange) return;
+    const next = addCut(cuts, cutRange, duration);
+    if (!next) {
+      notify('That would cut the whole video. Keep at least a moment of it.', 'error');
+      return;
+    }
+    const inside = stepsRef.current.filter((s) => cutAt(next, s.videoTime));
+    if (inside.length) setConfirmCut({ cuts: next, inside });
+    else commitCut(next);
+  };
+
+  const commitCut = async (next, inside = []) => {
+    setCutRange(null);
+    setConfirmCut(null);
+    if (inside.length) await deleteSteps(inside);
+    await onChangeCuts(next);
+    const video = videoRef.current;
+    const t = snapOutOfCuts(next, video?.currentTime ?? time, duration);
+    if (video) video.currentTime = t;
+    setTime(t);
+    // Removed features (and their pictures) can't come back, so Undo only without them.
+    notify(
+      'Part cut from the video',
+      'info',
+      inside.length ? undefined : { action: { label: 'Undo', onClick: () => onChangeCuts(cuts) } },
+    );
+  };
+
+  const restoreCut = (index) => onChangeCuts(cuts.filter((_, i) => i !== index));
 
   // ── Highlights of the step being edited (as in GlobalStepEditor) ──
   const setTargets = (list) => updateStep(editing.id, withTargets(list));
   // The first box belongs to this feature; every further box drawn on the same
   // picture becomes the next feature right away (no "Next feature" click needed).
+  // Either way the floating card opens next to the new box to set action + text.
   const addTarget = (region) => {
-    if (targets.length === 0 || !editing) setTargets([...targets, region]);
-    else createStep(editing.imageId, editing.videoTime, region);
+    if (targets.length === 0 || !editing) {
+      setTargets([...targets, region]);
+      if (editing && targets.length === 0) setQuickEditId(editing.id);
+    } else {
+      setQuickEditId(createStep(editing.imageId, editing.videoTime, region));
+    }
   };
   const changeTarget = (index, region) => {
     if (region) {
@@ -587,6 +716,12 @@ function TourBuilder({
     };
   } else if (!ready) {
     guide = { stage: null, tone: 'busy', text: 'Opening your video…' };
+  } else if (cutRange) {
+    guide = {
+      stage: null,
+      tone: 'problem',
+      text: 'Drag the red handles over the part you don’t need, then press Remove',
+    };
   } else if (playing) {
     guide = { stage: 1, text: 'Pause the video where the viewer should do something' };
   } else if (readyCount > 0) {
@@ -600,7 +735,7 @@ function TourBuilder({
   } else {
     guide = { stage: 2, text: 'Press + Add feature here' };
   }
-  const nudgeAdd = !editing && ready && !playing && guide.stage === 2;
+  const nudgeAdd = !editing && ready && !playing && !cutRange && guide.stage === 2;
 
   return (
     <div className="px-3 sm:px-4 py-3 flex flex-col gap-3 lg:h-[calc(100vh-3.5rem-1px)] lg:min-h-[520px]">
@@ -700,8 +835,16 @@ function TourBuilder({
                 highlightId={hoveredId}
                 onHoverSubStep={setHoveredId}
                 caption={{ text: editing.text || '', action: editing.action || 'click' }}
-                onCaptionClick={() =>
-                  document.getElementById(`video-step-desc-${editing.id}`)?.focus()
+                onCaptionClick={() => setQuickEditId(editing.id)}
+                boxEditor={
+                  quickEditId === editing.id && targets.length > 0 ? (
+                    <QuickStepEditor
+                      step={editing}
+                      number={editingNumber}
+                      onUpdate={(patch) => updateStep(editing.id, patch)}
+                      onDone={() => setQuickEditId(null)}
+                    />
+                  ) : null
                 }
               />
             </div>
@@ -731,7 +874,7 @@ function TourBuilder({
                   onEnded={() => setPlaying(false)}
                 />
               )}
-              {ready && !playing && (
+              {ready && !playing && !cutRange && (
                 <Tooltip
                   label="Take a picture of this moment and add a feature"
                   className="absolute bottom-4 left-1/2 -translate-x-1/2"
@@ -764,10 +907,25 @@ function TourBuilder({
               playing={playing}
               steps={steps}
               activeId={editingId}
+              cuts={cuts}
+              cutRange={cutRange}
+              onCutRangeChange={changeCutRange}
+              onRestoreCut={restoreCut}
               onTogglePlay={togglePlay}
               onSeek={seek}
               onPickStep={openStep}
             />
+            {ready && (
+              <VideoCutBar
+                duration={duration}
+                cuts={cuts}
+                cutRange={cutRange}
+                disabled={busy}
+                onStartCut={startCut}
+                onApplyCut={applyCut}
+                onCancelCut={() => setCutRange(null)}
+              />
+            )}
           </div>
         </div>
 
@@ -803,6 +961,7 @@ function TourBuilder({
             activeId={editingId}
             onOpen={openStep}
             onDelete={deleteStep}
+            onMove={moveStep}
           />
         </aside>
       </div>
@@ -820,6 +979,19 @@ function TourBuilder({
           onReplaceVideo();
         }}
         onCancel={() => setConfirmReplace(false)}
+      />
+      <ConfirmDialog
+        open={!!confirmCut}
+        title="Cut this part?"
+        message={
+          confirmCut?.inside.length === 1
+            ? '1 feature is in this part. It is removed with it.'
+            : `${confirmCut?.inside.length} features are in this part. They are removed with it.`
+        }
+        confirmLabel="Cut"
+        danger
+        onConfirm={() => commitCut(confirmCut.cuts, confirmCut.inside)}
+        onCancel={() => setConfirmCut(null)}
       />
     </div>
   );

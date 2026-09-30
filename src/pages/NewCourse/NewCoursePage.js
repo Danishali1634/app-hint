@@ -34,7 +34,7 @@ import {
   Video,
 } from 'lucide-react';
 import { findCourseByTitle, saveCourse } from '@/services/storage/db';
-import { CONTEXT_OPTIONS, CONTEXT_LABELS } from '@/constants';
+import {CONTEXT_LABELS } from '@/constants';
 import { nextId } from '@/utils';
 import { useToast } from '@/hooks/useToast';
 import { Tooltip } from '@/components/ui/Tooltip';

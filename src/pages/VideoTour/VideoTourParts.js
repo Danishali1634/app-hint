@@ -2,15 +2,19 @@
  * @file Pieces of the video tour builder (pages/VideoTour/VideoTourPage):
  *
  *   GuideBar        the one "what to do now" line + a 1·2·3·4 progress pill
- *   VideoControls   play / pause · scrubber with one marker per picture · time
- *   VideoStepList   the steps in video order, grouped by picture
+ *   VideoControls   play / pause · scrubber with one marker per picture · time;
+ *                   cut parts striped (click → put back), the part being cut red
+ *   VideoCutBar     "Cut a part" → drag the red handles → "Remove"
+ *   QuickStepEditor Click / Look / Type + description, floating next to a new box
+ *   VideoStepList   the steps as a playlist: title first, drag to reorder live
  *   VideoStepPanel  Click / Look / Type + description of the step being edited,
  *                   "Next step on this picture" and "Done, back to video"
  *
  * They only render and report; the page owns the steps and the video.
  */
 
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
+import { useSortableList } from '@/hooks/useSortableList';
 import {
   Play,
   Pause,
@@ -24,21 +28,36 @@ import {
   Plus,
   ArrowLeft,
   Loader2,
+  Scissors,
+  X,
+  GripVertical,
 } from 'lucide-react';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { DescriptionField } from '@/components/course/DescriptionField';
 import { getStepAction, getStepTargets } from '@/utils/course';
 import { formatDuration } from '@/utils';
+import { keptDuration, MIN_CUT_SEC } from '@/services/video/cuts';
 
 /** @typedef {import('@/types').Step} Step */
+/** @typedef {import('@/services/video/cuts').VideoCut} VideoCut */
 
 const SEEK_STEP_SEC = 5;
+/** Removed parts of the scrubber (danger red). */
+const CUT_STRIPES =
+  'repeating-linear-gradient(45deg, rgba(229,72,77,0.75) 0 3px, transparent 3px 6px)';
 
 const ACTIONS = [
   { value: 'click', Icon: MousePointerClick, text: 'Click', tip: 'The viewer clicks the box' },
   { value: 'look', Icon: Eye, text: 'Look', tip: 'Just point at it, no click' },
   { value: 'type', Icon: TextCursorInput, text: 'Type', tip: 'The viewer types into it' },
 ];
+
+/** What the description box asks for, per action. */
+const DESCRIBE_PLACEHOLDER = {
+  click: 'What should the viewer click? e.g. "Click Save to keep your changes"',
+  look: 'What should the viewer notice? e.g. "Your total shows here"',
+  type: 'What should the viewer type? e.g. "Type your email address"',
+};
 
 /** The numbered stages of making one step (shown in the GuideBar pill). */
 const STAGES = ['Find the moment', 'Add a feature', 'Draw a box', 'Describe it'];
@@ -151,6 +170,10 @@ function firstWords(text, count = 8) {
  *   playing: boolean,
  *   steps: Step[],
  *   activeId: string | null,
+ *   cuts?: VideoCut[],                 // removed parts (striped; click one to put it back)
+ *   cutRange?: VideoCut | null,        // the part being chosen for cutting (red, two handles)
+ *   onCutRangeChange?: (range: VideoCut, moved: 'start' | 'end') => void,
+ *   onRestoreCut?: (index: number) => void,
  *   onTogglePlay: () => void,
  *   onSeek: (seconds: number) => void,
  *   onPickStep: (step: Step) => void,
@@ -162,19 +185,78 @@ export function VideoControls({
   playing,
   steps,
   activeId,
+  cuts = [],
+  cutRange = null,
+  onCutRangeChange,
+  onRestoreCut,
   onTogglePlay,
   onSeek,
   onPickStep,
 }) {
   const trackRef = useRef(null);
   const draggingRef = useRef(false);
+  const handleRef = useRef(null); // 'start' | 'end' while dragging a cut handle
   const pct = (t) => (duration > 0 ? Math.min(100, Math.max(0, (t / duration) * 100)) : 0);
 
-  const seekFromPointer = (clientX) => {
+  const timeFromPointer = (clientX) => {
     const box = trackRef.current?.getBoundingClientRect();
-    if (!box || !duration) return;
-    onSeek(Math.min(1, Math.max(0, (clientX - box.left) / box.width)) * duration);
+    if (!box || !duration) return null;
+    return Math.min(1, Math.max(0, (clientX - box.left) / box.width)) * duration;
   };
+  const seekFromPointer = (clientX) => {
+    const t = timeFromPointer(clientX);
+    if (t !== null) onSeek(t);
+  };
+
+  // Dragging a handle of the red part: it never crosses the other handle.
+  const moveHandle = (clientX) => {
+    const which = handleRef.current;
+    const t = timeFromPointer(clientX);
+    if (!which || t === null || !cutRange) return;
+    const range =
+      which === 'start'
+        ? { start: Math.min(t, cutRange.end - MIN_CUT_SEC), end: cutRange.end }
+        : { start: cutRange.start, end: Math.max(t, cutRange.start + MIN_CUT_SEC) };
+    onCutRangeChange?.(
+      { start: Math.max(0, range.start), end: Math.min(duration, range.end) },
+      which,
+    );
+  };
+
+  const cutHandle = (which) => (
+    <div
+      role="slider"
+      tabIndex={0}
+      aria-label={which === 'start' ? 'Start of the part to cut' : 'End of the part to cut'}
+      aria-valuetext={formatDuration(cutRange[which])}
+      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-7 rounded-md bg-danger border-2 border-white dark:border-panel-dark shadow cursor-ew-resize touch-none flex items-center justify-center outline-none focus-visible:ring-2 focus-visible:ring-danger/40 z-10"
+      style={{ left: `${pct(cutRange[which])}%` }}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        handleRef.current = which;
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => handleRef.current === which && moveHandle(e.clientX)}
+      onPointerUp={() => (handleRef.current = null)}
+      onPointerCancel={() => (handleRef.current = null)}
+      onKeyDown={(e) => {
+        const delta = e.key === 'ArrowRight' ? 0.5 : e.key === 'ArrowLeft' ? -0.5 : 0;
+        if (!delta) return;
+        e.preventDefault();
+        const t = cutRange[which] + delta;
+        const range =
+          which === 'start'
+            ? { start: Math.max(0, Math.min(t, cutRange.end - MIN_CUT_SEC)), end: cutRange.end }
+            : {
+                start: cutRange.start,
+                end: Math.min(duration, Math.max(t, cutRange.start + MIN_CUT_SEC)),
+              };
+        onCutRangeChange?.(range, which);
+      }}
+    >
+      <span className="w-0.5 h-3 rounded bg-white/80" aria-hidden="true" />
+    </div>
+  );
 
   return (
     <div className="flex items-center gap-3 px-1">
@@ -223,7 +305,9 @@ export function VideoControls({
           aria-valuemax={Math.round(duration)}
           aria-valuenow={Math.round(time)}
           aria-valuetext={formatDuration(time)}
-          className="relative h-5 flex items-center cursor-pointer touch-none outline-none group focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
+          className={`relative flex items-center cursor-pointer touch-none outline-none group focus-visible:ring-2 focus-visible:ring-accent/40 rounded ${
+            cuts.length || cutRange ? 'h-7' : 'h-5'
+          }`}
           onPointerDown={(e) => {
             draggingRef.current = true;
             e.currentTarget.setPointerCapture(e.pointerId);
@@ -242,11 +326,49 @@ export function VideoControls({
           <div className="w-full h-1.5 rounded-full bg-line dark:bg-line-dark overflow-hidden">
             <div className="h-full bg-accent" style={{ width: `${pct(time)}%` }} />
           </div>
-          <div
-            className="absolute w-3.5 h-3.5 -ml-[7px] rounded-full bg-accent border-2 border-white dark:border-panel-dark shadow group-hover:scale-110 transition-transform"
-            style={{ left: `${pct(time)}%` }}
-            aria-hidden="true"
-          />
+          {/* Removed parts: striped blocks; clicking one puts it back */}
+          {cuts.map((cut, i) => (
+            <div
+              key={`${cut.start}-${cut.end}`}
+              className="absolute inset-y-1"
+              style={{ left: `${pct(cut.start)}%`, width: `${pct(cut.end) - pct(cut.start)}%` }}
+            >
+              <Tooltip
+                label={`Cut ${formatDuration(cut.start)}–${formatDuration(cut.end)} · click to put it back`}
+                className="block w-full h-full"
+              >
+                <button
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => onRestoreCut?.(i)}
+                  className="block w-full h-full min-w-[6px] rounded bg-danger/15 ring-1 ring-danger/40 hover:bg-danger/30"
+                  style={{ backgroundImage: CUT_STRIPES }}
+                  aria-label={`Put back ${formatDuration(cut.start)} to ${formatDuration(cut.end)}`}
+                />
+              </Tooltip>
+            </div>
+          ))}
+          {/* The part being chosen: red, with a handle at each end */}
+          {cutRange && (
+            <>
+              <div
+                className="absolute inset-y-1 rounded bg-danger/30 ring-2 ring-danger pointer-events-none"
+                style={{
+                  left: `${pct(cutRange.start)}%`,
+                  width: `${pct(cutRange.end) - pct(cutRange.start)}%`,
+                }}
+                aria-hidden="true"
+              />
+              {cutHandle('start')}
+              {cutHandle('end')}
+            </>
+          )}
+          {!cutRange && (
+            <div
+              className="absolute w-3.5 h-3.5 -ml-[7px] rounded-full bg-accent border-2 border-white dark:border-panel-dark shadow group-hover:scale-110 transition-transform pointer-events-none"
+              style={{ left: `${pct(time)}%` }}
+              aria-hidden="true"
+            />
+          )}
         </div>
       </div>
 
@@ -258,15 +380,190 @@ export function VideoControls({
 }
 
 /**
+ * Cutting the video in one go: "Cut a part" puts a red part on the scrubber
+ * at the current moment; drag its two handles over what should go (the video
+ * shows the frame under the handle), then "Remove this part". Parts already
+ * cut are striped on the scrubber; clicking one puts it back.
  * @param {{
- *   steps: Step[],                    // in video order
+ *   duration: number,
+ *   cuts: VideoCut[],
+ *   cutRange: VideoCut | null,
+ *   disabled?: boolean,
+ *   onStartCut: () => void,
+ *   onApplyCut: () => void,
+ *   onCancelCut: () => void,
+ * }} props
+ */
+export function VideoCutBar({
+  duration,
+  cuts,
+  cutRange,
+  disabled = false,
+  onStartCut,
+  onApplyCut,
+  onCancelCut,
+}) {
+  const buttonClass =
+    'flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+  if (cutRange) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 px-1">
+        <button
+          onClick={onApplyCut}
+          disabled={disabled}
+          className={`${buttonClass} bg-danger text-white hover:bg-danger/90`}
+        >
+          <Scissors className="w-3.5 h-3.5" /> Remove {formatDuration(cutRange.start)}–
+          {formatDuration(cutRange.end)}
+        </button>
+        <Tooltip label="Keep the video as it is" shortcut="Esc">
+          <button
+            onClick={onCancelCut}
+            className={`${buttonClass} text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark`}
+          >
+            <X className="w-3.5 h-3.5" /> Cancel
+          </button>
+        </Tooltip>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-1">
+      <Tooltip label="Remove a part of the video you don't need">
+        <button
+          onClick={onStartCut}
+          disabled={disabled}
+          className={`${buttonClass} border border-line dark:border-line-dark text-ink dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark`}
+        >
+          <Scissors className="w-3.5 h-3.5" /> Cut a part
+        </button>
+      </Tooltip>
+      {cuts.length > 0 && (
+        <span className="text-xs text-ink-faint dark:text-ink-faint-dark tabular-nums">
+          {cuts.length === 1 ? '1 part cut' : `${cuts.length} parts cut`} ·{' '}
+          {formatDuration(keptDuration(cuts, duration))} left · click a striped part to put it back
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The small card that floats next to a freshly drawn box (TargetCanvas
+ * `boxEditor`): pick what the viewer does and write it, right there. It edits
+ * the same step as the side panel, so both always show the same.
+ *   Enter (in the text) or ✓ → done; Shift+Enter → new line; Esc → done.
+ * @param {{
+ *   step: Step,
+ *   number: number,
+ *   onUpdate: (patch: Partial<Step>) => void,
+ *   onDone: () => void,
+ * }} props
+ */
+export function QuickStepEditor({ step, number, onUpdate, onDone }) {
+  const action = getStepAction(step);
+  const textRef = useRef(null);
+
+  // Ready to type right away (the pointer can stay where the box was drawn).
+  useEffect(() => {
+    textRef.current?.focus({ preventScroll: true });
+  }, [step.id]);
+
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
+      e.preventDefault();
+      e.stopPropagation();
+      onDone();
+    }
+  };
+
+  return (
+    <div
+      className="rounded-2xl bg-panel dark:bg-panel-dark border border-line dark:border-line-dark shadow-premium p-2.5 space-y-2"
+      onKeyDown={onKeyDown}
+      role="dialog"
+      aria-label={`Feature ${number}`}
+    >
+      <div className="flex items-center gap-2">
+        <span className="w-5 h-5 rounded-full bg-accent text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0">
+          {number}
+        </span>
+        <div className="flex-1 grid grid-cols-3 gap-0.5 rounded-lg p-0.5 bg-paper-2 dark:bg-paper-2-dark">
+          {ACTIONS.map(({ value, Icon, text, tip }) => (
+            <button
+              key={value}
+              onClick={() => {
+                onUpdate({ action: value });
+                textRef.current?.focus({ preventScroll: true });
+              }}
+              title={tip}
+              className={`flex items-center justify-center gap-1 h-7 rounded-md text-xs font-semibold transition-colors ${
+                action === value
+                  ? 'bg-accent text-white shadow-sm'
+                  : 'text-ink-soft dark:text-ink-soft-dark hover:bg-panel dark:hover:bg-panel-dark'
+              }`}
+              aria-pressed={action === value}
+            >
+              <Icon className="w-3.5 h-3.5" /> {text}
+            </button>
+          ))}
+        </div>
+      </div>
+      {action === 'type' && (
+        <input
+          type="text"
+          value={step.typeValue || ''}
+          onChange={(e) => onUpdate({ typeValue: e.target.value })}
+          placeholder="Text to type (optional)"
+          className="w-full px-2.5 py-1.5 rounded-lg bg-panel dark:bg-panel-dark border border-line dark:border-line-dark text-xs text-ink dark:text-ink-soft-dark outline-none focus:border-accent"
+          aria-label={`Text typed in feature ${number}`}
+        />
+      )}
+      <textarea
+        ref={textRef}
+        value={step.text || ''}
+        onChange={(e) => onUpdate({ text: e.target.value })}
+        rows={2}
+        placeholder={DESCRIBE_PLACEHOLDER[action]}
+        className="w-full resize-none px-2.5 py-2 rounded-lg bg-panel dark:bg-panel-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent"
+        aria-label={`What the viewer does in feature ${number}`}
+      />
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-[11px] text-ink-faint dark:text-ink-faint-dark">
+          Enter to finish · draw another box for the next feature
+        </span>
+        <button
+          onClick={onDone}
+          className="flex items-center gap-1 h-8 px-3 rounded-lg bg-accent text-white text-xs font-semibold hover:bg-accent-dark transition-colors"
+        >
+          <Check className="w-3.5 h-3.5" /> Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The features as a playlist: drag a row (or its handle, on touch) and the
+ * others make room live; release to drop it there. Each row leads with its
+ * title (the first words of its description); the number shows its place.
+ * Neighbouring rows on the same picture are joined by a line on the left.
+ * @param {{
+ *   steps: Step[],                    // in list order
  *   frameUrls: Record<string, string>, // imageId → object URL
  *   activeId: string | null,
  *   onOpen: (step: Step) => void,
  *   onDelete: (step: Step) => void,
+ *   onMove: (from: number, to: number) => void,  // drag & drop, positions in `steps`
  * }} props
  */
-export function VideoStepList({ steps, frameUrls, activeId, onOpen, onDelete }) {
+export function VideoStepList({ steps, frameUrls, activeId, onOpen, onDelete, onMove }) {
+  const byId = new Map(steps.map((step) => [step.id, step]));
+  const { order, draggingId, rowProps } = useSortableList({
+    ids: steps.map((step) => step.id),
+    onMove,
+  });
+
   if (!steps.length) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
@@ -277,81 +574,104 @@ export function VideoStepList({ steps, frameUrls, activeId, onOpen, onDelete }) 
       </div>
     );
   }
-  const row = ({ step, number }) => {
-    const url = step.imageId && frameUrls[step.imageId];
-    const noBox = getStepTargets(step).length === 0;
-    const active = step.id === activeId;
-    return (
-      <li
-        key={step.id}
-        className={`group relative flex items-center rounded-xl border transition-colors ${
-          active
-            ? 'border-accent bg-accent-soft/60 dark:bg-accent-soft-dark/30'
-            : 'border-transparent hover:bg-paper-2 dark:hover:bg-paper-2-dark'
-        }`}
-      >
-        <Tooltip label="Open this feature" className="flex-1 min-w-0">
-          <button
-            onClick={() => onOpen(step)}
-            className="w-full flex items-center gap-2.5 p-1.5 pr-9 text-left"
-          >
-            <span className="w-16 h-10 flex-shrink-0 rounded-md overflow-hidden bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark">
-              {url && (
-                <img src={url} alt="" className="w-full h-full object-cover" draggable={false} />
-              )}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-1.5 text-sm font-semibold text-ink dark:text-ink-soft-dark">
-                Feature {number}
-                <span className="text-xs font-medium text-ink-faint dark:text-ink-faint-dark tabular-nums">
-                  {formatDuration(step.videoTime)}
-                </span>
-              </span>
-              <span className="block text-xs text-ink-soft dark:text-ink-faint-dark truncate">
-                {firstWords(step.text) || '…'}
-              </span>
-            </span>
-          </button>
-        </Tooltip>
-        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center">
-          {noBox && (
-            <Tooltip label="No box yet: open it and drag a box">
-              <AlertCircle className="w-4 h-4 text-danger" aria-label="No box yet" />
-            </Tooltip>
-          )}
-          <Tooltip label="Delete this feature">
-            <button
-              onClick={() => onDelete(step)}
-              className="w-7 h-7 rounded-md flex items-center justify-center text-ink-faint dark:text-ink-faint-dark hover:text-danger hover:bg-danger/10"
-              aria-label={`Delete feature ${number}`}
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          </Tooltip>
-        </span>
-      </li>
-    );
-  };
 
   return (
     <ul className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
-      {groupByPicture(steps).map((group) =>
-        group.items.length === 1 ? (
-          row(group.items[0])
-        ) : (
-          // Several steps on one picture: one card with a small heading.
+      {order.map((id, i) => {
+        const step = byId.get(id);
+        if (!step) return null;
+        const number = i + 1;
+        const url = step.imageId && frameUrls[step.imageId];
+        const noBox = getStepTargets(step).length === 0;
+        const active = step.id === activeId;
+        const dragging = step.id === draggingId;
+        const title = firstWords(step.text);
+        const samePicture = (other) => !!other && !!step.imageId && other.imageId === step.imageId;
+        const joinUp = !draggingId && samePicture(byId.get(order[i - 1]));
+        const joinDown = !draggingId && samePicture(byId.get(order[i + 1]));
+        return (
           <li
-            key={`pic-${group.items[0].step.id}`}
-            className="rounded-xl border border-line dark:border-line-dark p-1"
+            key={step.id}
+            {...rowProps(step.id)}
+            className={`group relative flex items-center rounded-xl border select-none ${
+              dragging
+                ? 'border-accent bg-panel dark:bg-panel-dark shadow-xl ring-1 ring-accent/30'
+                : active
+                  ? 'border-accent bg-accent-soft/60 dark:bg-accent-soft-dark/30'
+                  : 'border-transparent hover:bg-paper-2 dark:hover:bg-paper-2-dark'
+            }`}
           >
-            <p className="px-1.5 pt-0.5 pb-1 text-[11px] font-semibold text-ink-faint dark:text-ink-faint-dark">
-              Picture at <span className="tabular-nums">{formatDuration(group.videoTime)}</span> ·{' '}
-              {group.items.length} features
-            </p>
-            <ul className="space-y-1">{group.items.map(row)}</ul>
+            {(joinUp || joinDown) && (
+              <span
+                aria-hidden
+                className={`absolute left-0 w-0.5 bg-accent/40 rounded-full ${
+                  joinUp ? '-top-1' : 'top-2'
+                } ${joinDown ? '-bottom-1' : 'bottom-2'}`}
+              />
+            )}
+            <Tooltip label="Drag to move this feature">
+              <span
+                data-drag-handle
+                className={`w-6 h-10 flex-shrink-0 flex items-center justify-center touch-none text-ink-faint dark:text-ink-faint-dark ${
+                  dragging ? 'cursor-grabbing' : 'cursor-grab'
+                }`}
+              >
+                <GripVertical className="w-4 h-4" />
+              </span>
+            </Tooltip>
+            <Tooltip label="Open this feature" className="flex-1 min-w-0">
+              <button
+                onClick={() => onOpen(step)}
+                className="w-full flex items-center gap-2.5 py-1.5 pr-9 text-left"
+              >
+                <span className="relative w-16 h-10 flex-shrink-0 rounded-md overflow-hidden bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark">
+                  {url && (
+                    <img
+                      src={url}
+                      alt=""
+                      className="w-full h-full object-cover"
+                      draggable={false}
+                    />
+                  )}
+                  <span className="absolute left-0.5 top-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-ink/80 text-white text-[10px] font-bold leading-[18px] text-center tabular-nums">
+                    {number}
+                  </span>
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span
+                    className={`block text-sm font-semibold truncate ${
+                      title
+                        ? 'text-ink dark:text-ink-soft-dark'
+                        : 'italic font-medium text-ink-faint dark:text-ink-faint-dark'
+                    }`}
+                  >
+                    {title || 'No title yet'}
+                  </span>
+                  <span className="block text-xs text-ink-faint dark:text-ink-faint-dark tabular-nums">
+                    {formatDuration(step.videoTime)}
+                  </span>
+                </span>
+              </button>
+            </Tooltip>
+            <span className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center">
+              {noBox && (
+                <Tooltip label="No box yet: open it and drag a box">
+                  <AlertCircle className="w-4 h-4 text-danger" aria-label="No box yet" />
+                </Tooltip>
+              )}
+              <Tooltip label="Delete this feature">
+                <button
+                  onClick={() => onDelete(step)}
+                  className="w-7 h-7 rounded-md flex items-center justify-center text-ink-faint dark:text-ink-faint-dark hover:text-danger hover:bg-danger/10"
+                  aria-label={`Delete ${title || `feature ${number}`}`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </Tooltip>
+            </span>
           </li>
-        ),
-      )}
+        );
+      })}
     </ul>
   );
 }

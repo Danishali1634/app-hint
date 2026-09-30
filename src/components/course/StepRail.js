@@ -7,14 +7,18 @@
  *
  * Features: select, delete (via the parent's confirm dialog), add a Global
  * Step at the end, INSERT one between any two (the small "+" between rows),
- * reorder Global Steps with native HTML5 drag & drop (sub-steps always move
- * with their Global Step). Adding/inserting is hidden at maxSteps.
+ * reorder by dragging, playlist style (hooks/useSortableList: the row follows
+ * the pointer and the others make room live). A screen is dragged by its
+ * header (its steps always move with it); a step is dragged within its own
+ * screen (its box belongs to that screenshot). Adding/inserting is hidden at
+ * maxSteps.
  *
  * SCROLLING: the list scrolls on its own (the parent limits the rail's height),
  * so 50–100 steps never push the screenshot out of view. "Add Global Step"
  * stays pinned under the list; the active sub-step is scrolled into view.
  *
- * Each step row stays short: its number, its title or text, and a warning
+ * Each step row stays short: its number, its title (its own label, else the
+ * first words of its text; "Feature n" only while it has neither), and a warning
  * icon (with a tooltip) when something is missing. Every button has a tooltip.
  */
 
@@ -31,6 +35,14 @@ import {
 } from 'lucide-react';
 import { DEFAULT_SUB_LABEL, getStepTargets, getStepUnits } from '@/utils/course';
 import { Tooltip } from '@/components/ui/Tooltip';
+import { useSortableList } from '@/hooks/useSortableList';
+
+/** A step's title: the label the author typed, else its text; '' while it has neither. */
+function stepTitle(step) {
+  const label = (step.label || '').trim();
+  if (label && !DEFAULT_SUB_LABEL.test(label) && !/^step \d+$/i.test(label)) return label;
+  return (step.text || '').trim().split('\n')[0];
+}
 
 /** @typedef {import('@/types').Step} Step */
 
@@ -44,6 +56,7 @@ import { Tooltip } from '@/components/ui/Tooltip';
  *   onDelete: (id: string) => void,        // one sub-step; parent shows a confirm dialog
  *   onDeleteUnit: (index: number) => void,  // the Global Step containing steps[index]
  *   onReorder: (from: number, to: number) => void,  // Global Step positions
+ *   onReorderFeature: (from: number, to: number) => void,  // positions in `steps`, same screen
  *   onHover?: (stepId: string | null) => void,  // sub-step row under the pointer
  *   maxSteps: number,
  *   fallbackImageId?: string | null,   // legacy course-wide screenshot (counts as "has image")
@@ -58,6 +71,7 @@ export function StepRail({
   onDelete,
   onDeleteUnit,
   onReorder,
+  onReorderFeature,
   onHover,
   maxSteps,
   fallbackImageId = null,
@@ -66,16 +80,6 @@ export function StepRail({
   // Groups the author opened/closed by hand; otherwise a group is open while
   // one of its sub-steps is active.
   const [toggledGroups, setToggledGroups] = useState({});
-
-  const handleDragStart = (e, index) => {
-    e.dataTransfer.setData('text/plain', String(index));
-  };
-
-  const handleDrop = (e, index) => {
-    e.preventDefault();
-    const from = parseInt(e.dataTransfer.getData('text/plain'), 10);
-    if (from !== index && !isNaN(from)) onReorder(from, index);
-  };
 
   // Keep the active step visible inside the scrolling list (without moving the page).
   useEffect(() => {
@@ -91,16 +95,18 @@ export function StepRail({
 
   const canAdd = steps.length < maxSteps;
   const units = getStepUnits(steps);
+  const unitKey = (unit) => unit.groupId || steps[unit.start].id;
+  const unitByKey = new Map(units.map((unit) => [unitKey(unit), unit]));
+  const screens = useSortableList({ ids: units.map(unitKey), onMove: onReorder });
 
   return (
     <div className="flex flex-col w-full min-h-0">
       <div ref={listRef} className="min-h-0 overflow-y-auto overscroll-contain -mx-1 px-1 py-1">
-        {units.map((unit, u) => {
-          const dragProps = {
-            onDragOver: (e) => e.preventDefault(), // required, otherwise drop never fires
-            onDrop: (e) => handleDrop(e, u),
-          };
-          const gap = u > 0 && (
+        {screens.order.map((key, u) => {
+          const unit = unitByKey.get(key);
+          if (!unit) return null;
+          // No inserting while a screen is being dragged (positions are a preview).
+          const gap = u > 0 && !screens.draggingId && (
             <InsertGap
               disabled={!canAdd}
               label={`Insert a new screen between ${u} and ${u + 1}`}
@@ -109,7 +115,6 @@ export function StepRail({
           );
 
           const subSteps = steps.slice(unit.start, unit.end + 1);
-          const key = unit.groupId || subSteps[0].id;
           const containsActive = subSteps.some((s) => s.id === activeStepId);
           const open = toggledGroups[key] ?? containsActive;
           return (
@@ -131,8 +136,11 @@ export function StepRail({
                 onHover={onHover}
                 onDelete={onDelete}
                 onDeleteUnit={() => onDeleteUnit(unit.start)}
-                dragProps={dragProps}
-                onDragStart={(e) => handleDragStart(e, u)}
+                sortProps={screens.rowProps(key)}
+                dragging={screens.draggingId === key}
+                onReorderFeature={(from, to) =>
+                  onReorderFeature(unit.start + from, unit.start + to)
+                }
               />
             </Fragment>
           );
@@ -172,26 +180,30 @@ function GroupBlock({
   onHover,
   onDelete,
   onDeleteUnit,
-  dragProps,
-  onDragStart,
+  sortProps,
+  dragging,
+  onReorderFeature,
 }) {
-  // A single step's own label (if the author typed one) names the screen.
-  const firstLabel = (subSteps[0].label || '').trim();
-  const title =
-    subSteps.length === 1 && firstLabel && !/^step \d+$/i.test(firstLabel) ? firstLabel : '';
+  // A single step's title names the screen.
+  const title = subSteps.length === 1 ? stepTitle(subSteps[0]) : '';
+  const byId = new Map(subSteps.map((step) => [step.id, step]));
+  const features = useSortableList({
+    ids: subSteps.map((step) => step.id),
+    onMove: onReorderFeature,
+  });
   return (
     <div
-      {...dragProps}
-      className={`rounded-xl border transition-all ${
-        containsActive
-          ? 'border-line dark:border-line-dark bg-panel dark:bg-panel-dark'
-          : 'border-transparent hover:bg-paper-2/60 dark:hover:bg-paper-2-dark/60'
+      {...sortProps}
+      className={`rounded-xl border select-none ${
+        dragging
+          ? 'border-accent bg-panel dark:bg-panel-dark shadow-xl ring-1 ring-accent/30'
+          : containsActive
+            ? 'border-line dark:border-line-dark bg-panel dark:bg-panel-dark'
+            : 'border-transparent hover:bg-paper-2/60 dark:hover:bg-paper-2-dark/60'
       }`}
     >
-      {/* Header: the MAIN step */}
+      {/* Header: the MAIN step (drag it to move the whole screen) */}
       <div
-        draggable
-        onDragStart={onDragStart}
         onClick={() => {
           if (!containsActive) onSelectMain();
           else onToggle();
@@ -199,7 +211,9 @@ function GroupBlock({
         className="group flex items-center gap-2 p-2.5 cursor-pointer"
       >
         <Tooltip label="Drag to move this screen">
-          <GripVertical className="w-4 h-4 text-ink-faint dark:text-ink-faint-dark flex-shrink-0 cursor-grab" />
+          <span data-drag-handle className="flex-shrink-0 touch-none cursor-grab">
+            <GripVertical className="w-4 h-4 text-ink-faint dark:text-ink-faint-dark" />
+          </span>
         </Tooltip>
         <div
           className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
@@ -247,11 +261,11 @@ function GroupBlock({
       {open && (
         <div className="pb-2 pr-2 pl-5">
           <div className="border-l border-line dark:border-line-dark pl-2 space-y-0.5">
-            {subSteps.map((step, k) => {
+            {features.order.map((id, k) => {
+              const step = byId.get(id);
+              if (!step) return null;
               const isActive = step.id === activeStepId;
-              const label = (step.label || '').trim();
-              const customLabel =
-                label && !DEFAULT_SUB_LABEL.test(label) && !/^step \d+$/i.test(label) ? label : '';
+              const isDragging = step.id === features.draggingId;
               const targetCount = getStepTargets(step).length;
               const hasText = !!step.text?.trim() || !!step.audioId;
               const missing = !hasImage
@@ -261,20 +275,31 @@ function GroupBlock({
                   : !hasText
                     ? 'Nothing written yet'
                     : '';
-              const summary = customLabel || step.text?.trim() || '';
+              const featureTitle = stepTitle(step);
+              const canDrag = subSteps.length > 1;
               return (
                 <div
                   key={step.id}
                   data-step-id={step.id}
+                  {...features.rowProps(step.id)}
                   onClick={() => onSelect(step.id)}
                   onPointerEnter={() => onHover?.(step.id)}
                   onPointerLeave={() => onHover?.(null)}
-                  className={`group flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer transition-colors ${
-                    isActive
-                      ? 'border-accent/50 bg-accent/5'
-                      : 'border-transparent hover:bg-paper-2 dark:hover:bg-paper-2-dark'
+                  className={`group flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer ${
+                    isDragging
+                      ? 'border-accent bg-panel dark:bg-panel-dark shadow-lg ring-1 ring-accent/30'
+                      : isActive
+                        ? 'border-accent/50 bg-accent/5'
+                        : 'border-transparent hover:bg-paper-2 dark:hover:bg-paper-2-dark'
                   }`}
                 >
+                  {canDrag && (
+                    <Tooltip label="Drag to move this feature">
+                      <span data-drag-handle className="-mx-1 flex-shrink-0 touch-none cursor-grab">
+                        <GripVertical className="w-3.5 h-3.5 text-ink-faint dark:text-ink-faint-dark" />
+                      </span>
+                    </Tooltip>
+                  )}
                   <span
                     className={`w-6 h-6 rounded-full text-[11px] font-bold flex items-center justify-center flex-shrink-0 ${
                       isActive
@@ -284,11 +309,14 @@ function GroupBlock({
                   >
                     {!isActive && hasImage && !missing ? <Check className="w-3.5 h-3.5" /> : k + 1}
                   </span>
-                  <p className="flex-1 min-w-0 text-xs text-ink dark:text-ink-soft-dark truncate">
-                    <span className="font-semibold">Feature {k + 1}</span>
-                    {summary && (
-                      <span className="text-ink-soft dark:text-ink-faint-dark"> · {summary}</span>
-                    )}
+                  <p
+                    className={`flex-1 min-w-0 text-xs truncate ${
+                      featureTitle
+                        ? 'font-semibold text-ink dark:text-ink-soft-dark'
+                        : 'italic text-ink-faint dark:text-ink-faint-dark'
+                    }`}
+                  >
+                    {featureTitle || `Feature ${k + 1}`}
                   </p>
                   {missing && (
                     <Tooltip label={missing}>
@@ -296,7 +324,7 @@ function GroupBlock({
                     </Tooltip>
                   )}
                   <DeleteButton
-                    label={`Delete feature ${k + 1}`}
+                    label={`Delete ${featureTitle ? `"${featureTitle}"` : `feature ${k + 1}`}`}
                     onDelete={() => onDelete(step.id)}
                   />
                 </div>

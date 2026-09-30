@@ -17,7 +17,8 @@
  *   wrapped in a responsive YouTube-style <iframe> snippet.
  *
  * DOWNLOAD VIDEO
- *   quality dialog (Full HD 1080p; the Fast 480p option is disabled for now)
+ *   download dialog: format (Web / Mobile portrait / Mobile landscape) and
+ *   quality (480p preselected every time; Full HD 1080p for a sharper picture)
  *   → buildWalkthroughSteps → exportWalkthroughVideo (WebCodecs encode, usually
  *   seconds) → downloadBlob. A progress overlay with Cancel is shown meanwhile.
  */
@@ -37,19 +38,21 @@ import { ShareLinkModal } from '@/components/course/ShareLinkModal';
 import { VideoExportOverlay } from '@/components/course/VideoExportOverlay';
 import { VideoQualityDialog } from '@/components/course/VideoQualityDialog';
 
-const QUALITY_KEY = 'videoQuality';
-// "Fast" (480p) is disabled for now, so every download is HD. Kept for later:
-// const readQuality = () => {
-//   try {
-//     return localStorage.getItem(QUALITY_KEY) === 'fast' ? 'fast' : 'hd';
-//   } catch {
-//     return 'hd';
-//   }
-// };
-const readQuality = () => 'hd';
-const saveQuality = (quality) => {
+/** Every download starts at 480p (fast, small); the dialog offers Full HD 1080p. */
+const DEFAULT_QUALITY = 'fast';
+const FORMAT_KEY = 'videoFormat';
+const FORMAT_VALUES = ['web', 'mobile-portrait', 'mobile-landscape'];
+const readFormat = () => {
   try {
-    localStorage.setItem(QUALITY_KEY, quality);
+    const format = localStorage.getItem(FORMAT_KEY);
+    return FORMAT_VALUES.includes(format) ? format : 'web';
+  } catch {
+    return 'web';
+  }
+};
+const saveFormat = (format) => {
+  try {
+    localStorage.setItem(FORMAT_KEY, format);
   } catch {
     // private mode: just not remembered
   }
@@ -134,8 +137,9 @@ export function useCourseSharing() {
     /**
      * @param {Course} course
      * @param {import('@/services/video/exportVideo').VideoQuality} quality
+     * @param {import('@/services/video/exportVideo').VideoFormat} [format]
      */
-    async (course, quality) => {
+    async (course, quality, format = 'web') => {
       const controller = new AbortController();
       abortRef.current = controller;
       setVideo({ title: course.title, progress: 0, stage: 'prepare' });
@@ -144,12 +148,14 @@ export function useCourseSharing() {
         const { blob, extension, silentSteps } = await exportWalkthroughVideo(steps, {
           title: course.title,
           quality,
+          format,
           signal: controller.signal,
           onStage: (stage, fraction = 0) =>
             setVideo((v) => (v ? { ...v, stage, progress: stage === 'voice' ? fraction : 0 } : v)),
           onProgress: (progress) => setVideo((v) => (v ? { ...v, progress } : v)),
         });
-        downloadBlob(blob, `${slug(course.title) || 'walkthrough'}.${extension}`);
+        const suffix = format === 'web' ? '' : `-${format}`; // e.g. "-mobile-portrait"
+        downloadBlob(blob, `${slug(course.title) || 'walkthrough'}${suffix}.${extension}`);
         if (silentSteps > 0) {
           notify(
             `Video downloaded — the AI voice couldn't load, so ${silentSteps} text step${silentSteps > 1 ? 's are' : ' is'} silent (check your internet)`,
@@ -178,12 +184,13 @@ export function useCourseSharing() {
       {qualityFor && (
         <VideoQualityDialog
           title={qualityFor.title}
-          initial={readQuality()}
+          initial={DEFAULT_QUALITY}
+          initialFormat={readFormat()}
           onClose={() => setQualityFor(null)}
-          onChoose={(quality) => {
-            saveQuality(quality);
+          onChoose={(quality, format) => {
+            saveFormat(format);
             setQualityFor(null);
-            recordVideo(qualityFor, quality);
+            recordVideo(qualityFor, quality, format);
           }}
         />
       )}

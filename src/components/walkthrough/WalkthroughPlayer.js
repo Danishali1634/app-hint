@@ -69,11 +69,18 @@
  * onPlayingChange reports play/pause, requestedIndex jumps to a frame,
  * pauseRequest pauses it, hideControls hides the bottom bar.
  *
+ * WEB / MOBILE VIEW (switch in the top bar, remembered in this browser):
+ *   Web     the caption shows the whole description (as always).
+ *   Mobile  as the Mobile video download: a long description is shown in
+ *           parts, each while the voice says it (utils/captionParts), in a
+ *           smaller font, never cut off; the picture gets the whole area
+ *           (almost no padding around the stage).
+ *
  * KEYBOARD: Space play/pause · ← → jump a step · Esc exit (ignored while typing)
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Pause, X, Maximize2, Minimize2 } from 'lucide-react';
+import { Play, Pause, X, Maximize2, Minimize2, Monitor, Smartphone } from 'lucide-react';
 import { useElementSize } from '@/hooks/useElementSize';
 import { useImageAspectRatios } from '@/hooks/useImageAspectRatios';
 import { hasNarration, useAiVoicePrefetch, useNarration } from '@/hooks/useNarration';
@@ -81,6 +88,7 @@ import { Spinner } from '@/components/ui/Spinner';
 import { WALKTHROUGH_TIMING } from '@/constants';
 import { CaptionContent, TextOnlyStage, WalkthroughStage } from './WalkthroughStage';
 import { clickOrigin, isClickAction } from '@/utils/course';
+import { readingPartMs, splitCaptionParts } from '@/utils/captionParts';
 import { StepList, StepsToggle, Timeline } from './Timeline';
 import { OutroCard } from './OutroCard';
 import { clickCount, transitionFor } from '@/services/video/timeline';
@@ -108,7 +116,23 @@ const COMPACT_MAX_HEIGHT = 480;
 /** Compact layout: height of the control bar over the picture (h-12) minus the
  *  stage area's padding — the caption keeps out of it. */
 const COMPACT_CONTROL_BAR_PX = 42;
-const SILENT_NARRATION = { mode: 'none', speaking: false, current: 0, duration: 0 };
+const SILENT_NARRATION = { mode: 'none', speaking: false, current: 0, duration: 0, part: 0 };
+const VIEW_KEY = 'walkthroughView';
+function readView() {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'mobile' ? 'mobile' : 'web';
+  } catch {
+    return 'web';
+  }
+}
+function saveView(view) {
+  try {
+    localStorage.setItem(VIEW_KEY, view);
+  } catch {
+    // private mode: just not remembered
+  }
+}
+
 /** How long the previous screen stays on stage while the next one enters (ms). */
 const LEAVE_MS = 650;
 
@@ -178,7 +202,13 @@ export function WalkthroughPlayer({
   const { start: startNarration, stop: stopNarration, pause: pauseNarration } = narration;
   const { resume: resumeNarration } = narration;
   // The AI voice for every step is prepared while the player waits for ▶.
-  useAiVoicePrefetch(steps);
+  const [view, setView] = useState(readView);
+  const mobileView = view === 'mobile';
+  const changeView = (next) => {
+    setView(next);
+    saveView(next);
+  };
+  useAiVoicePrefetch(steps, { captionParts: mobileView });
   const ratios = useImageAspectRatios(steps);
   const [stageAreaRef, stageArea] = useElementSize();
   const [rootRef, rootSize, rootNode] = useElementSize();
@@ -190,6 +220,18 @@ export function WalkthroughPlayer({
   const region = hasImage ? step.region : null;
   const isClick = !!region && isClickAction(step);
   const stepHasNarration = hasNarration(step);
+  // The caption style follows the view, but never in the middle of a voice
+  // (its text must keep matching what is being said): a switch made while a
+  // step is narrated applies once that narration is over.
+  const [captionMobile, setCaptionMobile] = useState(mobileView);
+  useEffect(() => {
+    if (phase !== 'narrate') setCaptionMobile(mobileView);
+  }, [phase, mobileView]);
+  // Mobile view: a long description is shown in parts, each while the voice
+  // says it (utils/captionParts); without a voice, each part stays up for its
+  // reading time. Web view: the whole description, as always.
+  const captionParts = captionMobile ? splitCaptionParts(step?.text) : [];
+  const [silentPart, setSilentPart] = useState(0);
   // Wait for the screenshot's real ratio before animating (camera math needs it).
   const ready = !!step && (!hasImage || ratios[step.id] != null);
 
@@ -385,7 +427,10 @@ export function WalkthroughPlayer({
       case 'point':
         return DURATION.point;
       case 'narrate':
-        return stepHasNarration ? null : DURATION.silentNarrate; // voice ends it
+        if (stepHasNarration) return null; // voice ends it
+        return captionParts.length > 1
+          ? captionParts.reduce((sum, p) => sum + readingPartMs(p), 0)
+          : DURATION.silentNarrate;
       case 'action':
         return (isClick ? DURATION.clickAction * clickCount(step) : DURATION.lookAction) + holdMs;
       case 'done':
@@ -415,12 +460,23 @@ export function WalkthroughPlayer({
     narrationOffsetRef.current = 0;
     startNarration(step, {
       offsetMs,
+      captionParts: captionMobile,
       onEnd: () => setPhase('action'),
       onBlocked: () => setPlaying(false), // browser blocked autoplay → wait for Play
     });
     return () => stopNarration();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, runId]);
+
+  // No voice: step through the caption parts at reading speed.
+  useEffect(() => setSilentPart(0), [phase, runId]);
+  const silentPartText = captionParts[silentPart];
+  const hasNextSilentPart = silentPart < captionParts.length - 1;
+  useEffect(() => {
+    if (phase !== 'narrate' || stepHasNarration || !playing || !hasNextSilentPart) return;
+    const timer = setTimeout(() => setSilentPart((k) => k + 1), readingPartMs(silentPartText));
+    return () => clearTimeout(timer);
+  }, [phase, stepHasNarration, playing, hasNextSilentPart, silentPartText]);
 
   // Pause / resume the voice with the Play button.
   useEffect(() => {
@@ -538,6 +594,15 @@ export function WalkthroughPlayer({
     speaking: playing && phase === 'narrate' && narration.mode !== 'none',
     current: narration.progress.current,
     duration: narration.progress.duration,
+    // Mobile view: the caption in parts; `part` = the one being said, after
+    // the voice the last. (Web view: the whole text, `part` unused.)
+    captionParts: captionMobile,
+    part:
+      phase === 'narrate'
+        ? stepHasNarration
+          ? narration.part
+          : silentPart
+        : Math.max(0, captionParts.length - 1),
   };
   const captionPhase = ['narrate', 'action', 'done'].includes(phase);
   const showDockedCaption = hasImage && reserveDocked && captionPhase;
@@ -717,6 +782,36 @@ export function WalkthroughPlayer({
             </h2>
           </div>
           <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+            <div
+              role="radiogroup"
+              aria-label="View"
+              className="flex items-center p-0.5 rounded-lg border border-line dark:border-line-dark"
+            >
+              {[
+                { value: 'web', label: 'Web', Icon: Monitor },
+                { value: 'mobile', label: 'Mobile', Icon: Smartphone },
+              ].map(({ value, label, Icon }) => (
+                <button
+                  key={value}
+                  role="radio"
+                  aria-checked={view === value}
+                  onClick={() => changeView(value)}
+                  title={
+                    value === 'web'
+                      ? 'Web view: the whole description in the caption'
+                      : 'Mobile view: bigger picture, long descriptions in parts with the voice'
+                  }
+                  className={`h-7 px-2 rounded-md flex items-center gap-1.5 text-xs font-semibold transition-colors ${
+                    view === value
+                      ? 'bg-accent text-white'
+                      : 'text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{label}</span>
+                </button>
+              ))}
+            </div>
             {canFullscreen && (
               <button
                 onClick={toggleFullscreen}
@@ -735,7 +830,7 @@ export function WalkthroughPlayer({
         {/* ── Stage area (measured) ── */}
         <div
           className={`flex-1 min-h-0 min-w-0 flex flex-col items-center justify-center overflow-hidden ${
-            compact ? 'p-2 gap-2' : 'p-4 sm:p-8 gap-4'
+            compact ? 'p-2 gap-2' : mobileView ? 'p-1 sm:p-2 gap-2' : 'p-4 sm:p-8 gap-4'
           }`}
         >
           <div

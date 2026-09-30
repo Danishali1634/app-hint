@@ -99,6 +99,8 @@
  *                                          steps' screenshots are taken from (pages/VideoTour)
  * @property {number | null} [sourceVideoDuration]  Measured recording length, seconds (fallback
  *                                          when the WebM file reports no duration)
+ * @property {{ start: number, end: number }[] | null} [videoCuts]  "Create by video": parts of
+ *                                          the recording cut away, seconds (services/video/cuts)
  * @property {Step[]} [videoDraftSteps]      "Create by video": steps in progress, autosaved;
  *                                          written to `steps` only by "Save walkthrough"
  * @property {number} createdAt              Epoch ms

@@ -20,6 +20,12 @@
  *   Text is spoken SENTENCE BY SENTENCE: natural pauses between sentences, and
  *   no silent cut-off (Chrome stops long single utterances after ~15 s).
  *
+ * CAPTION PARTS (Mobile view only): a long description is shown in parts
+ *   (utils/captionParts). Given the parts (an array), each is spoken as its own
+ *   AI-voice clip / its own utterances, and `onPart(k)` fires the moment part k
+ *   starts, so the caption shows exactly what the voice is saying. Given a plain
+ *   text (Web view, previews), it is spoken as one clip, exactly as before.
+ *
  * GOTCHA: voices load asynchronously; getVoices() can be [] at first. We
  * refresh on the `voiceschanged` event.
  */
@@ -145,11 +151,14 @@ export function createHinglishTTS() {
   let paused = false;
   let pendingBrowser = null; // browser fallback waiting for resume()
 
-  /** The browser's own voice, sentence by sentence. */
-  function speakWithBrowser(chunks, done, mySession, override) {
+  /** The browser's own voice, part by part, sentence by sentence. */
+  function speakWithBrowser(parts, done, mySession, override, onPart) {
     const voice = override ? pickVoice(override.voiceURI ?? null) : pickVoice();
     const rate = override?.rate ?? getVoiceSettings().rate;
-    chunks.forEach((chunk, i) => {
+    const chunks = parts.flatMap((part, k) =>
+      splitIntoSentences(part).map((text, n) => ({ text, startsPart: n === 0 ? k : -1 })),
+    );
+    chunks.forEach(({ text: chunk, startsPart }, i) => {
       const utterance = new SpeechSynthesisUtterance(chunk);
       if (voice) {
         utterance.voice = voice;
@@ -161,7 +170,9 @@ export function createHinglishTTS() {
       utterance.pitch = 1;
       utterance.volume = 1;
       utterance.onstart = () => {
-        if (mySession === session) state = 'speaking';
+        if (mySession !== session) return;
+        state = 'speaking';
+        if (startsPart >= 0) onPart?.(startsPart);
       };
       if (i === chunks.length - 1) utterance.onend = done;
       utterance.onerror = done;
@@ -182,15 +193,16 @@ export function createHinglishTTS() {
   /**
    * Speaks text; `onEnd` fires once when everything was read OR on error, so
    * callers can always rely on it to continue (e.g. to the next step).
-   * @param {string} text
+   * @param {string | string[]} text  a text (one clip), or its caption parts (one clip each)
    * @param {() => void} [onEnd]
    * @param {{ voiceURI?: string | null, rate?: number, aiVoiceId?: string }} [override]
    *   preview an unsaved choice
+   * @param {(k: number) => void} [onPart]  part k (index in the parts) starts being spoken
    */
-  function speak(text, onEnd, override) {
-    const chunks = splitIntoSentences(text);
+  function speak(text, onEnd, override, onPart) {
+    const parts = (Array.isArray(text) ? text : [text]).filter((p) => p?.trim());
     const ai = isAiVoiceSupported();
-    if ((!supported && !ai) || chunks.length === 0) {
+    if ((!supported && !ai) || parts.length === 0) {
       onEnd?.();
       return;
     }
@@ -198,6 +210,7 @@ export function createHinglishTTS() {
     const mySession = ++session;
     paused = false;
     let finished = false;
+    let currentPart = 0; // the part being spoken (the browser fallback resumes there)
     const done = () => {
       if (finished || mySession !== session) return;
       finished = true;
@@ -216,48 +229,69 @@ export function createHinglishTTS() {
         pendingBrowser = fallBackToBrowser;
         return;
       }
-      speakWithBrowser(chunks, done, mySession, override);
+      // The browser voice starts over from the part the AI voice was on.
+      speakWithBrowser(parts.slice(currentPart), done, mySession, override, (k) =>
+        onPart?.(currentPart + k),
+      );
     };
     if (!ai) {
       fallBackToBrowser();
       return;
     }
 
-    // 1. The AI voice (same audio as the video).
-    state = 'loading';
-    let gaveUp = false;
-    let timer;
-    const giveUp = () => {
-      if (paused) {
-        timer = setTimeout(giveUp, 1000); // don't give up while paused
-        return;
-      }
-      gaveUp = true;
-      fallBackToBrowser();
-    };
-    timer = setTimeout(giveUp, AI_VOICE_WAIT_MS);
-    aiVoiceUrl(text, { voiceId: override?.aiVoiceId, rate: override?.rate })
-      .then((url) => {
-        clearTimeout(timer);
-        if (gaveUp || finished || mySession !== session) return;
-        const el = new Audio(url);
-        audio = el;
-        el.onended = done;
-        el.onerror = () => audio === el && fallBackToBrowser();
-        el.onplaying = () => {
-          if (mySession === session) state = 'speaking';
-        };
-        if (!paused) {
-          el.play().catch((err) => {
-            if (err?.name !== 'AbortError' && audio === el) fallBackToBrowser();
-          });
+    // 1. The AI voice (same audio as the video): one clip per part, in order;
+    //    the next part's clip is prepared while this one plays.
+    const voiceOptions = { voiceId: override?.aiVoiceId, rate: override?.rate };
+    const clip = (k) => aiVoiceUrl(parts[k], voiceOptions);
+    const playPart = (k) => {
+      currentPart = k;
+      if (audio) audio.onended = audio.onerror = audio.onplaying = null;
+      audio = null;
+      state = 'loading';
+      let gaveUp = false;
+      let announced = false; // onPart once per part (not again after a pause)
+      let timer;
+      const giveUp = () => {
+        if (paused) {
+          timer = setTimeout(giveUp, 1000); // don't give up while paused
+          return;
         }
-      })
-      .catch(() => {
-        clearTimeout(timer);
-        // 2. Fallback: the browser's voice.
-        if (!gaveUp) fallBackToBrowser();
-      });
+        gaveUp = true;
+        fallBackToBrowser();
+      };
+      timer = setTimeout(giveUp, AI_VOICE_WAIT_MS);
+      clip(k)
+        .then((url) => {
+          clearTimeout(timer);
+          if (gaveUp || finished || mySession !== session) return;
+          const el = new Audio(url);
+          audio = el;
+          el.onended = () => {
+            if (audio !== el) return;
+            if (k + 1 < parts.length) playPart(k + 1);
+            else done();
+          };
+          el.onerror = () => audio === el && fallBackToBrowser();
+          el.onplaying = () => {
+            if (mySession !== session) return;
+            state = 'speaking';
+            if (!announced) onPart?.(k);
+            announced = true;
+          };
+          if (k + 1 < parts.length) clip(k + 1).catch(() => {}); // ready when needed
+          if (!paused) {
+            el.play().catch((err) => {
+              if (err?.name !== 'AbortError' && audio === el) fallBackToBrowser();
+            });
+          }
+        })
+        .catch(() => {
+          clearTimeout(timer);
+          // 2. Fallback: the browser's voice.
+          if (!gaveUp) fallBackToBrowser();
+        });
+    };
+    playPart(0);
   }
 
   function cancel() {

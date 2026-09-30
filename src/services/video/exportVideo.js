@@ -27,9 +27,22 @@
  * players with a chapter menu (VLC, mpv, IINA, PotPlayer …) jump to a step on
  * click. A video file can't hold clickable buttons in the picture itself.
  *
- * QUALITY: Full HD — 1080p, 30 fps, H.264 at 5 Mbps (sharp text on screenshots),
- * mono 64 kbps voice. If the encoder can't do 1080p it makes 720p. (The old
- * "fast" 480p option is disabled — kept in VIDEO_QUALITIES for later.)
+ * FORMAT (the download dialog):
+ *   web               16:9 1280×720 layout (as always): the whole description
+ *                     in the caption (3 lines, then …), the voice as one clip.
+ *   mobile-portrait   the phone's full screen upright (9:16, 1080×1920) and
+ *   mobile-landscape  sideways (16:9, 1920×1080): thin margins so the picture
+ *                     fills the screen, text drawn larger for a phone, and
+ *                     caption parts (utils/captionParts): a long description
+ *                     is shown in parts, never cut off, each while the voice
+ *                     says it (the AI voice speaks one clip per part).
+ *
+ * QUALITY (the download dialog preselects 480p every time):
+ *   fast  480p, 24 fps, H.264 at 600 kbps — ready sooner, a small file.
+ *   hd    Full HD — 1080p, 30 fps, H.264 at 5 Mbps (sharp text on
+ *         screenshots). If the encoder can't do 1080p it makes 720p.
+ * For every format (Web: 854×480 / 1920×1080; Mobile portrait: 480×854 /
+ * 1080×1920; Mobile landscape: 854×480 / 1920×1080). Mono 64 kbps voice.
  *
  * VOICE: text steps are spoken by the AI voice chosen in Settings, from the SAME
  * audio the live player plays (neuralVoice.aiVoiceWav) — so the video sounds
@@ -50,6 +63,7 @@ import { renderFrame } from './renderFrame';
 import { addMp4Chapters } from './mp4Chapters';
 import { getStepTitles } from '@/utils/course';
 import { aiVoiceFromSettings, aiVoiceWav } from '@/services/audio/neuralVoice';
+import { readingPartMs, recordingPartStarts, splitCaptionParts } from '@/utils/captionParts';
 
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
 
@@ -62,13 +76,34 @@ const LAYOUT_HEIGHT = 720;
  * and shapes stay vector-sharp; screenshots are drawn from their full resolution.
  */
 export const VIDEO_QUALITIES = {
-  // FAST 480p — disabled for now (kept for later): text was too soft.
-  // fast: { width: 854, height: 480, fps: 24, bitrate: 600_000 },
+  // 480p: ready sooner, a small file (the dialog's default).
+  fast: { width: 854, height: 480, fps: 24, bitrate: 600_000 },
   // Full HD: 5 Mbps keeps small screenshot text crisp while the camera moves.
   hd: { width: 1920, height: 1080, fps: 30, bitrate: 5_000_000 },
 };
 /** Used only when this computer's encoder can't make 1080p. */
 const HD_720 = { width: 1280, height: 720, fps: 30, bitrate: 3_000_000 };
+
+/**
+ * Mobile formats: the whole phone screen, per quality (+ the Full HD fallback
+ * when the encoder can't make 1080p). Frames are drawn with a 480 px short
+ * side (so captions come out big enough to read on a phone) and scaled.
+ */
+const MOBILE_FORMATS = {
+  'mobile-portrait': {
+    layoutWidth: 480,
+    fast: { width: 480, height: 854, fps: 24, bitrate: 600_000 },
+    hd: { width: 1080, height: 1920, fps: 30, bitrate: 5_000_000 },
+    fallback: { width: 720, height: 1280, fps: 30, bitrate: 3_000_000 },
+  },
+  'mobile-landscape': {
+    layoutWidth: 853.33,
+    fast: { width: 854, height: 480, fps: 24, bitrate: 600_000 },
+    hd: { width: 1920, height: 1080, fps: 30, bitrate: 5_000_000 },
+    fallback: HD_720,
+  },
+};
+/** @typedef {'web' | 'mobile-portrait' | 'mobile-landscape'} VideoFormat */
 /** @typedef {keyof typeof VIDEO_QUALITIES} VideoQuality */
 
 /**
@@ -85,6 +120,8 @@ const VIDEO_HOLD = { overview: 600, lookAction: 700 };
 /** Voice only: mono 64 kbps is clear speech. */
 const AUDIO_BITRATE = 64_000;
 const AUDIO_SAMPLE_RATE = 48_000;
+/** Silence between two caption parts of one AI-voice text (like a sentence pause). */
+const PART_GAP_SEC = 0.25;
 /**
  * H.264 profiles to try, best compression first: High 4.0, Main 4.0, Baseline
  * 4.2 (all fit 1080p30), then Baseline 3.1 (720p only).
@@ -125,10 +162,33 @@ function pickMimeType() {
   return MIME_CANDIDATES.find((type) => MediaRecorder.isTypeSupported(type)) || '';
 }
 
-/** How long the caption stays up for a step without a recording (reading time). */
-function readingTimeMs(text) {
+/** Web: how long the caption stays up for a step without a recording (reading time). */
+function webReadingTimeMs(text) {
   if (!text?.trim()) return WALKTHROUGH_TIMING.silentNarrate + 800;
   return Math.min(12000, Math.max(3500, text.length * 75));
+}
+
+/** Mobile: how long the caption stays up for a step without a voice (reading time of every part). */
+function readingTimeMs(parts) {
+  if (!parts.length) return WALKTHROUGH_TIMING.silentNarrate + 800;
+  return parts.reduce((sum, part) => sum + readingPartMs(part), 0);
+}
+
+/** The clips one after another, PART_GAP_SEC apart, as one buffer + where each starts (s). */
+function joinClips(audioCtx, clips) {
+  const rate = clips[0].sampleRate;
+  const gap = Math.round(PART_GAP_SEC * rate);
+  const length = clips.reduce((sum, c) => sum + c.length, 0) + gap * (clips.length - 1);
+  const joined = audioCtx.createBuffer(1, length, rate);
+  const out = joined.getChannelData(0);
+  const starts = [];
+  let at = 0;
+  for (const clip of clips) {
+    starts.push(at / rate);
+    out.set(clip.getChannelData(0), at);
+    at += clip.length + gap;
+  }
+  return { buffer: joined, starts };
 }
 
 async function loadImage(src) {
@@ -152,6 +212,7 @@ const abortError = () => new DOMException('Cancelled', 'AbortError');
  * @param {WalkthroughStep[]} steps
  * @param {{
  *   title: string,
+ *   format?: VideoFormat,                                // default 'web'
  *   onProgress?: (fraction: number) => void,           // encoding progress 0–1
  *   onStage?: (stage: 'voice' | 'record', fraction?: number) => void,
  *   signal?: AbortSignal,
@@ -162,9 +223,13 @@ const abortError = () => new DOMException('Cancelled', 'AbortError');
  */
 export async function exportWalkthroughVideo(
   steps,
-  { title, quality = 'hd', onProgress, onStage, signal },
+  { title, quality = 'hd', format = 'web', onProgress, onStage, signal },
 ) {
-  let q = VIDEO_QUALITIES[quality] ?? VIDEO_QUALITIES.hd;
+  const mobileFormat = MOBILE_FORMATS[format] ?? null;
+  const mobile = !!mobileFormat;
+  let q = mobile
+    ? (mobileFormat[quality] ?? mobileFormat.hd)
+    : (VIDEO_QUALITIES[quality] ?? VIDEO_QUALITIES.hd);
   if (!isVideoExportSupported()) {
     throw new Error('Video download is not supported in this browser.');
   }
@@ -205,8 +270,19 @@ export async function exportWalkthroughVideo(
   );
   throwIfAborted();
 
+  // Mobile: caption parts (utils/captionParts) — a long text is shown part by
+  // part, each while the voice says it. partStarts[i] = seconds into step i's
+  // voice. Web: the whole text is one caption and one voice clip, as always.
+  const captionParts = steps.map((step) =>
+    mobile ? splitCaptionParts(step.text) : step.text?.trim() ? [step.text] : [],
+  );
+  const partStarts = steps.map((_, i) =>
+    voices[i] && mobile
+      ? recordingPartStarts(voices[i].getChannelData(0), voices[i].sampleRate, captionParts[i])
+      : null,
+  );
   const toSpeak = steps
-    .map((step, i) => (!voices[i] && step.text?.trim() ? i : -1))
+    .map((_, i) => (!voices[i] && captionParts[i].length ? i : -1))
     .filter((i) => i >= 0);
   let silentSteps = 0;
   // The AI voice + speed from Settings — the same audio the player plays.
@@ -216,12 +292,25 @@ export async function exportWalkthroughVideo(
     const i = toSpeak[n];
     onStage?.('voice', n / toSpeak.length);
     try {
-      const wav = await aiVoiceWav(steps[i].text, voice, (download) =>
-        onStage?.('voice', (n + download * 0.9) / toSpeak.length),
-      );
-      voices[i] = await decodeAudio(decoder, await wav.arrayBuffer());
-      isAiVoice[i] = !!voices[i];
-    } catch {
+      // One clip per caption part (the same clips the player plays), so each
+      // part's caption starts exactly when its words do.
+      const clips = [];
+      for (const part of captionParts[i]) {
+        const wav = await aiVoiceWav(part, voice, (download) =>
+          onStage?.('voice', (n + download * 0.9) / toSpeak.length),
+        );
+        const clip = await decodeAudio(decoder, await wav.arrayBuffer());
+        if (!clip) throw new Error('voice clip could not be decoded');
+        clips.push(clip);
+        throwIfAborted();
+      }
+      const { buffer, starts } =
+        clips.length === 1 ? { buffer: clips[0], starts: [0] } : joinClips(decoder, clips);
+      voices[i] = buffer;
+      partStarts[i] = starts;
+      isAiVoice[i] = true;
+    } catch (err) {
+      if (err?.name === 'AbortError') throw err;
       voices[i] = null;
     }
     if (!voices[i]) silentSteps++;
@@ -230,29 +319,65 @@ export async function exportWalkthroughVideo(
   onStage?.('record');
 
   // 2. Timeline
-  const narrationMs = steps.map((step, i) =>
+  const narrationMs = steps.map((_, i) =>
     voices[i]
       ? VOICE_LEAD_IN + voices[i].duration * 1000 + AFTER_VOICE_PAUSE
-      : readingTimeMs(step.text),
+      : mobile
+        ? readingTimeMs(captionParts[i])
+        : webReadingTimeMs(steps[i].text),
   );
   const { segments, total } = buildTimeline(steps, narrationMs, VIDEO_HOLD);
+  // What the frames draw (Mobile): each step with its caption parts and when
+  // each part starts (ms into its "narrate" phase). Web: the steps as they are.
+  const frameSteps = !mobile
+    ? steps
+    : steps.map((step, i) => {
+        const parts = captionParts[i];
+        let startsMs;
+        if (voices[i]) {
+          startsMs = partStarts[i].map((sec, k) => (k === 0 ? 0 : VOICE_LEAD_IN + sec * 1000));
+        } else {
+          let at = 0;
+          startsMs = parts.map((part) => {
+            const start = at;
+            at += readingPartMs(part);
+            return start;
+          });
+        }
+        return { ...step, captionParts: parts, captionPartStarts: startsMs };
+      });
 
   // 1080p when this computer's encoder can make it, else 720p.
-  if (canEncodeFast() && q.height > HD_720.height && !(await pickVideoConfig(q))) q = HD_720;
+  if (mobile) {
+    if (q === mobileFormat.hd && canEncodeFast() && !(await pickVideoConfig(q))) {
+      q = mobileFormat.fallback;
+    }
+  } else if (canEncodeFast() && q.height > HD_720.height && !(await pickVideoConfig(q))) {
+    q = HD_720;
+  }
 
   const canvas = document.createElement('canvas');
   canvas.width = q.width;
   canvas.height = q.height;
   const ctx = canvas.getContext('2d');
-  const scale = q.width / LAYOUT_WIDTH;
+  // Web: always drawn at 1280×720. Mobile: a 480 px short side, in the
+  // video's exact shape (so every pixel of the frame is drawn).
+  const layout = mobile
+    ? {
+        width: mobileFormat.layoutWidth,
+        height: (q.height * mobileFormat.layoutWidth) / q.width,
+      }
+    : { width: LAYOUT_WIDTH, height: LAYOUT_HEIGHT };
+  const scale = q.width / layout.width;
   const drawAt = (t) => {
     const { segment, progress, elapsed } = segmentAt(segments, t);
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     renderFrame(ctx, {
-      width: LAYOUT_WIDTH,
-      height: LAYOUT_HEIGHT,
+      width: layout.width,
+      height: layout.height,
+      mobile,
       title,
-      steps,
+      steps: frameSteps,
       images,
       segments,
       segment,

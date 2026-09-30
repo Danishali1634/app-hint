@@ -22,6 +22,12 @@
  * the step list) outlines that sub-step's targets; hovering a box reports its
  * sub-step through onHoverSubStep so the panel can highlight the card.
  *
+ * BOX EDITOR (optional `boxEditor`): a small card that floats right next to
+ * the selected sub-step's first box (below it, else above, else beside), so
+ * the action and description can be set where the box was just drawn. It
+ * lives outside the scrolling screenshot, so it's never clipped, and follows
+ * zoom and scroll. While it shows, the caption bubble is hidden.
+ *
  * Selected sub-step: solid accent boxes numbered "2" (one target) or "2·1",
  * "2·2" (several). Other sub-steps: dashed grey boxes with their number.
  */
@@ -87,6 +93,7 @@ const TOOL_BUTTON_CLASS =
  *   onHoverSubStep?: (id: string | null) => void,
  *   caption?: { text: string, action: 'click' | 'look' | 'type' },  // the selected step's words
  *   onCaptionClick?: () => void,                   // e.g. focus the description field
+ *   boxEditor?: import('react').ReactNode,         // floats next to the selected box
  * }} props
  */
 export function TargetCanvas({
@@ -103,6 +110,7 @@ export function TargetCanvas({
   onHoverSubStep,
   caption,
   onCaptionClick,
+  boxEditor = null,
 }) {
   const containerRef = useRef(null); // the screenshot itself (coordinates)
   const viewportRef = useRef(null); // the scrolling area around it
@@ -113,6 +121,7 @@ export function TargetCanvas({
   const [draw, setDraw] = useState(null); // { start, current } while dragging a new box
   const [drag, setDrag] = useState(null); // { index, mode, handle, startX, startY, orig }
   const zoomAnchorRef = useRef(null); // keep this image point under the pointer after zooming
+  const wrapperRef = useRef(null); // the non-scrolling area the box editor floats in
 
   const active = subSteps.find((s) => s.id === activeId);
   const activeTargets = active?.targets || [];
@@ -399,7 +408,7 @@ export function TargetCanvas({
           {zoomTools('')}
         </div>
       ) : null}
-      <div className="group/canvas relative flex-1 min-h-0">
+      <div ref={wrapperRef} className="group/canvas relative flex-1 min-h-0">
         {!hint && (
           <div className="absolute top-2 right-4 z-20">
             {zoomTools(
@@ -558,14 +567,19 @@ export function TargetCanvas({
 
               {/* Live caption next to the first box: what viewers will read, where
                   they will read it. Clicking it jumps to the text field. */}
-              {caption && active && activeTargets[0] && !draw && replacingIndex === null && (
-                <CaptionBubble
-                  box={activeTargets[0]}
-                  number={active.number}
-                  text={caption.text}
-                  onClick={onCaptionClick}
-                />
-              )}
+              {caption &&
+                !boxEditor &&
+                active &&
+                activeTargets[0] &&
+                !draw &&
+                replacingIndex === null && (
+                  <CaptionBubble
+                    box={activeTargets[0]}
+                    number={active.number}
+                    text={caption.text}
+                    onClick={onCaptionClick}
+                  />
+                )}
 
               {/* Live preview while drawing */}
               {draw && (
@@ -577,7 +591,88 @@ export function TargetCanvas({
             </div>
           </div>
         </div>
+        {boxEditor && active && activeTargets[0] && !draw && !drag && replacingIndex === null && (
+          <FloatingBoxEditor
+            box={activeTargets[0]}
+            canvasRef={containerRef}
+            wrapperRef={wrapperRef}
+            viewportNode={viewportNode}
+            layoutKey={`${canvasWidth}x${canvasHeight}`}
+          >
+            {boxEditor}
+          </FloatingBoxEditor>
+        )}
       </div>
+    </div>
+  );
+}
+
+/** Gap between the box and the floating editor, and from the workspace edges, px. */
+const EDITOR_GAP = 10;
+
+/**
+ * Places `children` next to `box` (percent of the screenshot), in the
+ * coordinates of the non-scrolling wrapper: below the box if it fits, else
+ * above, else to the right / left; always kept inside the wrapper.
+ * Re-measured on scroll, zoom and resize.
+ */
+function FloatingBoxEditor({ box, canvasRef, wrapperRef, viewportNode, layoutKey, children }) {
+  const cardRef = useRef(null);
+  const [pos, setPos] = useState(null);
+
+  const place = useCallback(() => {
+    const canvas = canvasRef.current?.getBoundingClientRect();
+    const wrap = wrapperRef.current?.getBoundingClientRect();
+    const card = cardRef.current;
+    if (!canvas || !wrap || !card) return;
+    const cw = card.offsetWidth;
+    const ch = card.offsetHeight;
+    // The box, relative to the wrapper.
+    const bx = canvas.left - wrap.left + (box.x / 100) * canvas.width;
+    const by = canvas.top - wrap.top + (box.y / 100) * canvas.height;
+    const bw = (box.w / 100) * canvas.width;
+    const bh = (box.h / 100) * canvas.height;
+    const maxLeft = Math.max(EDITOR_GAP, wrap.width - cw - EDITOR_GAP);
+    const maxTop = Math.max(EDITOR_GAP, wrap.height - ch - EDITOR_GAP);
+    const clamp = (v, max) => Math.min(max, Math.max(EDITOR_GAP, v));
+
+    let left = clamp(bx, maxLeft);
+    let top;
+    if (by + bh + EDITOR_GAP + ch <= wrap.height - EDITOR_GAP) top = by + bh + EDITOR_GAP;
+    else if (by - EDITOR_GAP - ch >= EDITOR_GAP) top = by - EDITOR_GAP - ch;
+    else {
+      // No room above or below: beside the box.
+      top = clamp(by, maxTop);
+      left =
+        bx + bw + EDITOR_GAP + cw <= wrap.width - EDITOR_GAP
+          ? bx + bw + EDITOR_GAP
+          : clamp(bx - EDITOR_GAP - cw, maxLeft);
+    }
+    setPos({ left, top });
+  }, [box.x, box.y, box.w, box.h, canvasRef, wrapperRef]);
+
+  useLayoutEffect(place, [place, layoutKey]);
+
+  useEffect(() => {
+    if (!viewportNode) return;
+    const card = cardRef.current;
+    const observer = new ResizeObserver(place);
+    if (card) observer.observe(card);
+    if (wrapperRef.current) observer.observe(wrapperRef.current);
+    viewportNode.addEventListener('scroll', place, { passive: true });
+    return () => {
+      observer.disconnect();
+      viewportNode.removeEventListener('scroll', place);
+    };
+  }, [viewportNode, place, wrapperRef]);
+
+  return (
+    <div
+      ref={cardRef}
+      className="absolute z-30 w-[300px] max-w-[calc(100%-20px)]"
+      style={pos ? { left: pos.left, top: pos.top } : { visibility: 'hidden', left: 0, top: 0 }}
+    >
+      {children}
     </div>
   );
 }

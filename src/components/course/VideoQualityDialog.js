@@ -1,41 +1,76 @@
 /**
- * @file Asks which quality to download the walkthrough video in, before the
- * export starts: Full HD (1080p). (The "Fast" 480p option is disabled for
- * now — kept commented out for later.) Driven by hooks/useCourseSharing.
+ * @file Asks how to download the walkthrough video, before the export starts:
+ *   FORMAT   Web (16:9, as always) or Mobile app, upright or sideways (the
+ *            phone's full screen, long descriptions in parts with the voice;
+ *            see services/video/exportVideo). Remembered.
+ *   QUALITY  480p (preselected every time: ready sooner, a small file) or
+ *            Full HD 1080p (a sharper picture).
+ * Driven by hooks/useCourseSharing.
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Film, Sparkles, X } from 'lucide-react';
-// import { Gauge } from 'lucide-react'; // for the disabled "Fast" option
+import { Film, Gauge, Monitor, Smartphone, Sparkles, X } from 'lucide-react';
 
+/** The qualities: 480p first (the default), then the better one. */
 const OPTIONS = [
-  // FAST 480p — disabled for now (kept for later): the picture was too soft.
-  // {
-  //   value: 'fast',
-  //   Icon: Gauge,
-  //   title: 'Fast · 480p',
-  //   text: 'Ready much sooner and a smaller file. Good for chat and quick sharing.',
-  // },
+  {
+    value: 'fast',
+    Icon: Gauge,
+    title: '480p',
+    text: 'Ready sooner, smaller file',
+  },
   {
     value: 'hd',
     Icon: Sparkles,
     title: 'Full HD · 1080p',
-    text: 'Sharp text and pointer, with the voice chosen in Settings.',
+    text: 'Sharper text and picture',
+  },
+];
+
+/** The formats (with the voice chosen in Settings). */
+const FORMATS = [
+  {
+    value: 'web',
+    Icon: Monitor,
+    title: 'Web · 16:9',
+    text: 'For websites, computers and presentations.',
+  },
+  {
+    value: 'mobile-portrait',
+    Icon: Smartphone,
+    title: 'Mobile app · Portrait 9:16',
+    text: 'Fills a phone held upright. Long descriptions show in parts, in time with the voice.',
+  },
+  {
+    value: 'mobile-landscape',
+    Icon: Smartphone,
+    rotate: true,
+    title: 'Mobile app · Landscape 16:9',
+    text: 'Fills a phone held sideways. Long descriptions show in parts, in time with the voice.',
   },
 ];
 
 /**
  * @param {{
  *   title: string,                       // course title
- *   initial?: 'fast' | 'hd',
- *   onChoose: (quality: 'fast' | 'hd') => void,
+ *   initial?: 'fast' | 'hd',             // preselected quality (default 480p)
+ *   initialFormat?: import('@/services/video/exportVideo').VideoFormat,
+ *   onChoose: (quality: 'fast' | 'hd', format: import('@/services/video/exportVideo').VideoFormat) => void,
  *   onClose: () => void,
  * }} props
  */
-export function VideoQualityDialog({ title, initial = 'hd', onChoose, onClose }) {
-  // Only offered qualities can be preselected (a remembered "fast" → HD).
+export function VideoQualityDialog({
+  title,
+  initial = 'fast',
+  initialFormat = 'web',
+  onChoose,
+  onClose,
+}) {
   const [quality, setQuality] = useState(() =>
-    OPTIONS.some((o) => o.value === initial) ? initial : 'hd',
+    OPTIONS.some((o) => o.value === initial) ? initial : 'fast',
+  );
+  const [format, setFormat] = useState(() =>
+    FORMATS.some((f) => f.value === initialFormat) ? initialFormat : 'web',
   );
   const startRef = useRef(null);
 
@@ -83,16 +118,22 @@ export function VideoQualityDialog({ title, initial = 'hd', onChoose, onClose })
           </button>
         </div>
 
-        <div role="radiogroup" aria-label="Video quality" className="space-y-2">
-          {OPTIONS.map(({ value, Icon, title: optionTitle, text }) => {
-            const selected = quality === value;
+        <p
+          id="video-format-label"
+          className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-faint dark:text-ink-faint-dark"
+        >
+          Format
+        </p>
+        <div role="radiogroup" aria-labelledby="video-format-label" className="space-y-2">
+          {FORMATS.map(({ value, Icon, rotate, title: optionTitle, text }) => {
+            const selected = format === value;
             return (
               <button
                 key={value}
                 role="radio"
                 aria-checked={selected}
-                onClick={() => setQuality(value)}
-                onDoubleClick={() => onChoose(value)}
+                onClick={() => setFormat(value)}
+                onDoubleClick={() => onChoose(quality, value)}
                 className={`w-full flex items-start gap-3 p-3 rounded-xl border text-left transition-colors ${
                   selected
                     ? 'border-accent bg-accent/5 dark:bg-accent/10 ring-2 ring-accent/25'
@@ -100,7 +141,7 @@ export function VideoQualityDialog({ title, initial = 'hd', onChoose, onClose })
                 }`}
               >
                 <Icon
-                  className={`w-5 h-5 mt-0.5 flex-shrink-0 ${selected ? 'text-accent' : 'text-ink-faint dark:text-ink-faint-dark'}`}
+                  className={`w-5 h-5 mt-0.5 flex-shrink-0 ${rotate ? 'rotate-90' : ''} ${selected ? 'text-accent' : 'text-ink-faint dark:text-ink-faint-dark'}`}
                 />
                 <span className="min-w-0">
                   <span className="block text-sm font-semibold text-ink dark:text-ink-soft-dark">
@@ -115,6 +156,51 @@ export function VideoQualityDialog({ title, initial = 'hd', onChoose, onClose })
           })}
         </div>
 
+        <p
+          id="video-quality-label"
+          className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-ink-faint dark:text-ink-faint-dark"
+        >
+          Quality
+        </p>
+        <div
+          role="radiogroup"
+          aria-labelledby="video-quality-label"
+          className="grid grid-cols-2 gap-2"
+        >
+          {OPTIONS.map(({ value, Icon, title: optionTitle, text }) => {
+            const selected = quality === value;
+            return (
+              <button
+                key={value}
+                role="radio"
+                aria-checked={selected}
+                onClick={() => setQuality(value)}
+                onDoubleClick={() => onChoose(value, format)}
+                className={`flex items-start gap-2 p-2.5 rounded-xl border text-left transition-colors ${
+                  selected
+                    ? 'border-accent bg-accent/5 dark:bg-accent/10 ring-2 ring-accent/25'
+                    : 'border-line dark:border-line-dark hover:border-ink-faint dark:hover:border-ink-faint-dark'
+                }`}
+              >
+                <Icon
+                  className={`w-4 h-4 mt-0.5 flex-shrink-0 ${selected ? 'text-accent' : 'text-ink-faint dark:text-ink-faint-dark'}`}
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-ink dark:text-ink-soft-dark">
+                    {optionTitle}
+                  </span>
+                  <span className="block text-xs text-ink-soft dark:text-ink-faint-dark">
+                    {text}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-3 text-xs text-ink-faint dark:text-ink-faint-dark">
+          With the voice chosen in Settings.
+        </p>
+
         <div className="mt-5 flex justify-end gap-2">
           <button
             onClick={onClose}
@@ -124,7 +210,7 @@ export function VideoQualityDialog({ title, initial = 'hd', onChoose, onClose })
           </button>
           <button
             ref={startRef}
-            onClick={() => onChoose(quality)}
+            onClick={() => onChoose(quality, format)}
             className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-semibold hover:bg-accent-dark transition-colors"
           >
             Download

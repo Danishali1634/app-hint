@@ -7,6 +7,9 @@
  *     - choosing recorded audio vs text-to-speech,
  *     - pause / resume / stop,
  *     - progress for the "0:04 / 0:12" display,
+ *     - Mobile view only (`captionParts: true`): which CAPTION PART is being
+ *       spoken (utils/captionParts) — a long description is shown part by
+ *       part, each while the voice says it. Web view speaks the whole text.
  *     - releasing audio on unmount.
  *
  * WHY THE `token` GUARD
@@ -29,6 +32,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AI_VOICE_WAIT_MS, canSpeakText, createHinglishTTS } from '@/services/audio/tts';
 import { isAiVoiceSupported, prefetchAiVoice } from '@/services/audio/neuralVoice';
+import { partAt, partAtOffset, recordingPartStarts, splitCaptionParts } from '@/utils/captionParts';
 
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
 
@@ -62,8 +66,11 @@ const PREFETCH_DELAY_MS = 1200;
  * starts immediately (and the video later reuses the same audio).
  * @param {WalkthroughStep[]} steps
  */
-export function useAiVoicePrefetch(steps) {
-  const texts = steps.filter((s) => !s.audioData && s.text?.trim()).map((s) => s.text);
+export function useAiVoicePrefetch(steps, { captionParts = false } = {}) {
+  // Mobile view speaks one clip per caption part; Web view one clip per text.
+  const texts = steps
+    .filter((s) => !s.audioData && s.text?.trim())
+    .flatMap((s) => (captionParts ? splitCaptionParts(s.text) : [s.text]));
   const key = texts.join('\u0000');
   useEffect(() => {
     if (!key || !isAiVoiceSupported()) return;
@@ -88,6 +95,7 @@ export function hasNarration(step) {
  * @returns {{
  *   mode: 'recorded' | 'tts' | 'none',
  *   progress: { current: number, duration: number },   // seconds, recorded audio only
+ *   part: number,                                       // caption part being spoken
  *   start: (step: WalkthroughStep, handlers: { onEnd: () => void, onBlocked?: () => void }) => void,
  *   pause: () => void,
  *   resume: () => void,
@@ -97,6 +105,7 @@ export function hasNarration(step) {
 export function useNarration() {
   const [mode, setMode] = useState('none');
   const [progress, setProgress] = useState({ current: 0, duration: 0 });
+  const [part, setPart] = useState(0);
   const audioRef = useRef(null);
   // One TTS controller for the lifetime of the component.
   const ttsRef = useRef(null);
@@ -129,10 +138,11 @@ export function useNarration() {
     ttsRef.current.cancel();
     setMode('none');
     setProgress({ current: 0, duration: 0 });
+    setPart(0);
   }, [clearTtsTimer]);
 
   const start = useCallback(
-    (step, { onEnd, onBlocked, offsetMs = 0 }) => {
+    (step, { onEnd, onBlocked, offsetMs = 0, captionParts = false }) => {
       stop();
       const token = tokenRef.current;
       let finished = false;
@@ -144,17 +154,36 @@ export function useNarration() {
         onEnd();
       };
 
+      // Mobile view: the caption parts (Web view: none, the whole text is one card).
+      const parts = captionParts ? splitCaptionParts(step.text) : [];
+      const isCurrent = () => tokenRef.current === token;
+
       /** Text-to-speech (also used when a recording can't be played here). */
       const speakText = () => {
         setMode('tts');
-        // Timeline seek: speech can't start mid-word, so start from the sentence
-        // that would be playing at that moment.
-        const text = offsetMs > 0 ? textFromOffset(step.text, offsetMs) : step.text;
+        if (!captionParts) {
+          // Timeline seek: speech can't start mid-word, so start from the sentence
+          // that would be playing at that moment.
+          const text = offsetMs > 0 ? textFromOffset(step.text, offsetMs) : step.text;
+          // + the time the AI voice may need to get ready (it falls back to the
+          // browser voice after AI_VOICE_WAIT_MS).
+          ttsFallbackRef.current = { finish, ms: AI_VOICE_WAIT_MS + estimateSpeechMs(text) };
+          armTtsTimer();
+          ttsRef.current.speak(text, finish);
+          return;
+        }
+        // Mobile: start from the caption part that would be playing at that moment.
+        const first = offsetMs > 0 ? partAtOffset(parts, offsetMs) : 0;
+        const rest = parts.slice(first);
+        setPart(first);
         // + the time the AI voice may need to get ready (it falls back to the
         // browser voice after AI_VOICE_WAIT_MS).
-        ttsFallbackRef.current = { finish, ms: AI_VOICE_WAIT_MS + estimateSpeechMs(text) };
+        ttsFallbackRef.current = {
+          finish,
+          ms: AI_VOICE_WAIT_MS + estimateSpeechMs(rest.join(' ')) + rest.length * 1000,
+        };
         armTtsTimer();
-        ttsRef.current.speak(text, finish);
+        ttsRef.current.speak(rest, finish, undefined, (k) => isCurrent() && setPart(first + k));
       };
       const canSpeak = !!step.text?.trim() && canSpeakText();
 
@@ -165,12 +194,39 @@ export function useNarration() {
         audioRef.current = audio;
         // Timeline seek into the middle of the recording.
         if (offsetMs > 0) audio.currentTime = offsetMs / 1000;
-        audio.onloadedmetadata = () =>
-          setProgress((p) => ({
-            ...p,
-            duration: Number.isFinite(audio.duration) ? audio.duration : 0,
-          }));
-        audio.ontimeupdate = () => setProgress((p) => ({ ...p, current: audio.currentTime }));
+        // Caption parts: switch points estimated from the text (share of the
+        // recording's length) until the recording is decoded, then moved to
+        // its real pauses.
+        let partStarts = null;
+        const estimateStarts = () => {
+          const total = parts.reduce((sum, p) => sum + p.length, 0) || 1;
+          let before = 0;
+          partStarts = parts.map((p) => {
+            const at = (before / total) * audio.duration;
+            before += p.length;
+            return at;
+          });
+        };
+        if (parts.length > 1) {
+          fetch(step.audioData)
+            .then((r) => r.arrayBuffer())
+            .then((bytes) => new OfflineAudioContext(1, 1, 44100).decodeAudioData(bytes))
+            .then((buffer) => {
+              if (!isCurrent()) return;
+              partStarts = recordingPartStarts(buffer.getChannelData(0), buffer.sampleRate, parts);
+              setPart(partAt(partStarts, audio.currentTime));
+            })
+            .catch(() => {}); // keep the estimate
+        }
+        audio.onloadedmetadata = () => {
+          const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+          setProgress((p) => ({ ...p, duration }));
+          if (parts.length > 1 && !partStarts && duration) estimateStarts();
+        };
+        audio.ontimeupdate = () => {
+          setProgress((p) => ({ ...p, current: audio.currentTime }));
+          if (partStarts) setPart(partAt(partStarts, audio.currentTime));
+        };
         audio.onended = finish;
         // A recording this browser can't decode (or a broken one) must not
         // freeze the walkthrough: read the text with the AI voice instead,
@@ -222,5 +278,5 @@ export function useNarration() {
   // Silence everything when the player unmounts.
   useEffect(() => stop, [stop]);
 
-  return { mode, progress, start, pause, resume, stop };
+  return { mode, progress, part, start, pause, resume, stop };
 }
