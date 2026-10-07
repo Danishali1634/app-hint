@@ -59,6 +59,8 @@
 
 import { WALKTHROUGH_TIMING } from '@/constants';
 import { buildTimeline, segmentAt } from './timeline';
+import { paceScale } from '@/utils/pace';
+import { markSamePages } from '@/utils/samePage';
 import { renderFrame } from './renderFrame';
 import { addMp4Chapters } from './mp4Chapters';
 import { getStepTitles } from '@/utils/course';
@@ -216,6 +218,7 @@ const abortError = () => new DOMException('Cancelled', 'AbortError');
  *   onProgress?: (fraction: number) => void,           // encoding progress 0–1
  *   onStage?: (stage: 'voice' | 'record', fraction?: number) => void,
  *   signal?: AbortSignal,
+ *   pace?: number,                                     // the course's pace: 0.5 = half speed (utils/pace)
  * }} options
  * @returns {Promise<{ blob: Blob, extension: 'mp4' | 'webm', silentSteps: number }>}
  *   silentSteps = text steps that got no voice (neural voice unavailable)
@@ -223,8 +226,10 @@ const abortError = () => new DOMException('Cancelled', 'AbortError');
  */
 export async function exportWalkthroughVideo(
   steps,
-  { title, quality = 'hd', format = 'web', onProgress, onStage, signal },
+  { title, quality = 'hd', format = 'web', onProgress, onStage, signal, pace = 1 },
 ) {
+  // The course's pace stretches every pause and reading time, like the player.
+  const k = paceScale(pace);
   const mobileFormat = MOBILE_FORMATS[format] ?? null;
   const mobile = !!mobileFormat;
   let q = mobile
@@ -239,6 +244,9 @@ export async function exportWalkthroughVideo(
 
   // Fonts must be ready, or the first frames draw captions in a fallback font.
   await document.fonts?.ready;
+
+  // Separate screenshots of one page play as one continuous motion, as in the player.
+  steps = await markSamePages(steps);
 
   // 1. Media — screenshots, recordings, and the AI voice for text-only steps.
   const images = {};
@@ -321,12 +329,14 @@ export async function exportWalkthroughVideo(
   // 2. Timeline
   const narrationMs = steps.map((_, i) =>
     voices[i]
-      ? VOICE_LEAD_IN + voices[i].duration * 1000 + AFTER_VOICE_PAUSE
-      : mobile
-        ? readingTimeMs(captionParts[i])
-        : webReadingTimeMs(steps[i].text),
+      ? (VOICE_LEAD_IN + AFTER_VOICE_PAUSE) * k + voices[i].duration * 1000
+      : (mobile ? readingTimeMs(captionParts[i]) : webReadingTimeMs(steps[i].text)) * k,
   );
-  const { segments, total } = buildTimeline(steps, narrationMs, VIDEO_HOLD);
+  const { segments, total } = buildTimeline(steps, narrationMs, {
+    overview: VIDEO_HOLD.overview * k,
+    lookAction: VIDEO_HOLD.lookAction * k,
+    pace,
+  });
   // What the frames draw (Mobile): each step with its caption parts and when
   // each part starts (ms into its "narrate" phase). Web: the steps as they are.
   const frameSteps = !mobile
@@ -335,12 +345,12 @@ export async function exportWalkthroughVideo(
         const parts = captionParts[i];
         let startsMs;
         if (voices[i]) {
-          startsMs = partStarts[i].map((sec, k) => (k === 0 ? 0 : VOICE_LEAD_IN + sec * 1000));
+          startsMs = partStarts[i].map((sec, n) => (n === 0 ? 0 : VOICE_LEAD_IN * k + sec * 1000));
         } else {
           let at = 0;
           startsMs = parts.map((part) => {
             const start = at;
-            at += readingPartMs(part);
+            at += readingPartMs(part) * k;
             return start;
           });
         }
@@ -406,6 +416,7 @@ export async function exportWalkthroughVideo(
     q,
     onProgress,
     signal,
+    leadIn: VOICE_LEAD_IN * k, // when each voice starts in its narrate phase
   };
 
   // 3. Encode: fast when possible, real-time recording otherwise.
@@ -440,19 +451,18 @@ function voiceChain(audioCtx, destination) {
 }
 
 /** ms from the start of the video at which each step's voice starts (after the lead-in). */
-function narrationStarts(segments) {
+function narrationStarts(segments, leadIn = VOICE_LEAD_IN) {
   const starts = {};
-  for (const s of segments)
-    if (s.phase === 'narrate') starts[s.stepIndex] = s.start + VOICE_LEAD_IN;
+  for (const s of segments) if (s.phase === 'narrate') starts[s.stepIndex] = s.start + leadIn;
   return starts;
 }
 
 /** Every voice at its narration time, mixed into one mono track (faster than real time). */
-async function mixVoicesOffline(voices, isAiVoice, segments, total) {
+async function mixVoicesOffline(voices, isAiVoice, segments, total, leadIn) {
   const length = Math.ceil((total / 1000) * AUDIO_SAMPLE_RATE);
   const offline = new OfflineAudioContext(1, length, AUDIO_SAMPLE_RATE);
   const input = voiceChain(offline, offline.destination);
-  const starts = narrationStarts(segments);
+  const starts = narrationStarts(segments, leadIn);
   voices.forEach((buffer, i) => {
     if (!buffer) return;
     const source = offline.createBufferSource();
@@ -522,6 +532,7 @@ async function encodeFast({
   q,
   onProgress,
   signal,
+  leadIn,
 }) {
   const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
   const videoConfig = await pickVideoConfig(q);
@@ -557,7 +568,7 @@ async function encodeFast({
 
   // Audio first (quick): the whole mixed voice track.
   if (audio) {
-    const mixed = await mixVoicesOffline(voices, isAiVoice, segments, total);
+    const mixed = await mixVoicesOffline(voices, isAiVoice, segments, total, leadIn);
     const audioEncoder = new AudioEncoder({
       output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
       error: (e) => (failure = e),
@@ -626,6 +637,7 @@ async function recordRealtime({
   q,
   onProgress,
   signal,
+  leadIn,
 }) {
   drawAt(0);
   const stream = canvas.captureStream(q.fps);
@@ -657,7 +669,7 @@ async function recordRealtime({
   const t0 = performance.now();
   if (audioDestination) {
     const audioStart = audioCtx.currentTime;
-    const starts = narrationStarts(segments);
+    const starts = narrationStarts(segments, leadIn);
     voices.forEach((buffer, i) => {
       if (!buffer) return;
       const source = audioCtx.createBufferSource();

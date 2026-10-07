@@ -6,10 +6,13 @@
  *
  * COMPONENT TREE
  *   ThemeProvider          light/dark state           (hooks/useTheme)
- *   └ ToastProvider        notify() anywhere          (hooks/useToast)
- *     └ HashRouter
- *       ├ AppRoutes        chooses layout + page
- *       └ ToastContainer   renders toasts on every page
+ *   └ HashRouter
+ *     ├ LoadingProvider    "please wait" screen + Cancel   (hooks/useLoading)
+ *     │ └ AppRoutes        chooses layout + page
+ *     │   └ PlanProvider     Free / Pro plan + upgrade dialog (hooks/usePlan)
+ *     │     └ CoursesProvider  the course list, shared (hooks/useCourses)
+ *     └ ToastContainer     renders toasts on every page (outside the loading lock,
+ *                          so toasts stay visible and clickable)
  *
  * ROUTES
  *   #/                     HomePage            create a course · search · "View all"
@@ -20,6 +23,7 @@
  *   #/video/:courseId      VideoTourPage       record / upload a video, add steps from it
  *   #/preview/:courseId    CoursePreviewPage   summary + full walkthrough playback
  *   #/s/:encoded           SharedCoursePage    play a course embedded in the URL
+ *   #/login                LoginPage           username + password (full page, no login logic yet)
  *   #/e/:encoded           EmbedPage           player only, for <iframe> embeds
  *   (#/s/:slug/:encoded and #/embed/:slug/:encoded: older links, still work)
  *                                              (WATCH-ONLY: inside an iframe no other
@@ -46,8 +50,10 @@ import { Header } from '@/components/ui/Header';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { PageSpinner } from '@/components/ui/Spinner';
 import { ToastContainer } from '@/components/ui/Toast';
-import { ToastProvider } from '@/hooks/useToast';
 import { ThemeProvider } from '@/hooks/useTheme';
+import { LoadingProvider } from '@/hooks/useLoading';
+import { CoursesProvider } from '@/hooks/useCourses';
+import { PlanProvider } from '@/hooks/usePlan';
 
 const HomePage = lazy(() => import('@/pages/Home/HomePage').then((m) => ({ default: m.HomePage })));
 const LibraryPage = lazy(() =>
@@ -70,6 +76,9 @@ const VideoTourPage = lazy(() =>
 );
 const CoursePreviewPage = lazy(() =>
   import('@/pages/CoursePreview/CoursePreviewPage').then((m) => ({ default: m.CoursePreviewPage })),
+);
+const LoginPage = lazy(() =>
+  import('@/pages/Login/LoginPage').then((m) => ({ default: m.LoginPage })),
 );
 const SharedCoursePage = lazy(() =>
   import('@/pages/SharedCourse/SharedCoursePage').then((m) => ({ default: m.SharedCoursePage })),
@@ -163,34 +172,54 @@ function AppRoutes() {
     );
   }
 
+  // Login is a full page (no sidebar / header).
+  if (location.pathname === '/login') {
+    return (
+      <Suspense fallback={<PageSpinner />}>
+        <LoginPage />
+      </Suspense>
+    );
+  }
+
+  // Everything else is the authoring app.
+  return <AuthoringRoutes />;
+}
+
+function AuthoringRoutes() {
+  // PlanProvider: Free / Pro gates (authoring only — viewers never see a paywall).
+  // CoursesProvider: the course list, shared by every page.
   return (
-    <Layout>
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/courses" element={<LibraryPage />} />
-        <Route path="/examples" element={<ExamplesPage />} />
-        <Route path="/examples/:exampleId" element={<ExamplesPage />} />
-        <Route path="/new" element={<NewCoursePage />} />
-        <Route path="/editor/:courseId" element={<CourseEditorPage />} />
-        <Route path="/video/:courseId" element={<VideoTourPage />} />
-        <Route path="/preview/:courseId" element={<CoursePreviewPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Layout>
+    <PlanProvider>
+      <CoursesProvider>
+        <Layout>
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/courses" element={<LibraryPage />} />
+            <Route path="/examples" element={<ExamplesPage />} />
+            <Route path="/examples/:exampleId" element={<ExamplesPage />} />
+            <Route path="/new" element={<NewCoursePage />} />
+            <Route path="/editor/:courseId" element={<CourseEditorPage />} />
+            <Route path="/video/:courseId" element={<VideoTourPage />} />
+            <Route path="/preview/:courseId" element={<CoursePreviewPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Layout>
+      </CoursesProvider>
+    </PlanProvider>
   );
 }
 
 export function AppRouter() {
   return (
     <ThemeProvider>
-      <ToastProvider>
-        <HashRouter>
+      <HashRouter>
+        <LoadingProvider>
           <div className="min-h-screen">
             <AppRoutes />
-            <ToastContainer />
           </div>
-        </HashRouter>
-      </ToastProvider>
+        </LoadingProvider>
+        <ToastContainer />
+      </HashRouter>
     </ThemeProvider>
   );
 }

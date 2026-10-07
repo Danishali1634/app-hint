@@ -60,7 +60,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Plus, HelpCircle, RefreshCw, Save, PlayCircle } from 'lucide-react';
 import { getCourse, saveCourse, putMedia, getMedia, deleteMedia } from '@/services/storage/db';
 import { resolveVideoDuration } from '@/services/video/screenRecorder';
@@ -72,7 +72,8 @@ import { WhatsNext } from '@/components/tutorial/WhatsNext';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { PageSpinner } from '@/components/ui/Spinner';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
+import { UndoToast } from '@/components/ui/Toast';
 import { useMediaUrls } from '@/hooks/useMediaUrls';
 import { nextId } from '@/utils';
 import {
@@ -181,7 +182,6 @@ function captureFrame(video) {
 export function VideoTourPage() {
   const { courseId } = useParams();
   const navigate = useNavigate();
-  const { notify } = useToast();
   /** @type {[Course | null, Function]} */
   const [course, setCourse] = useState(null);
   const [steps, setSteps] = useState([]);
@@ -191,12 +191,31 @@ export function VideoTourPage() {
   const dirtyRef = useRef(false);
   const finishedRef = useRef(false);
 
+  const location = useLocation();
+  // The course NewCoursePage just created (read once).
+  const [justCreated] = useState(location.state?.course);
+
   useEffect(() => {
     let cancelled = false;
-    getCourse(courseId).then((found) => {
+
+    async function load() {
+      let found;
+      if (justCreated?.id === courseId) {
+        // Just created → use it directly, no need to load it again.
+        found = justCreated;
+        navigate(location.pathname, { replace: true }); // forget it, so a page refresh loads the saved version
+      } else {
+        try {
+          found = await getCourse(courseId);
+        } catch (error) {
+          toast.error(`Could not open the course: ${error.message}`);
+          navigate('/', { replace: true });
+          return;
+        }
+      }
       if (cancelled) return;
       if (!found) {
-        notify('Course not found', 'error');
+        toast.error('Course not found');
         navigate('/', { replace: true });
         return;
       }
@@ -204,11 +223,13 @@ export function VideoTourPage() {
       stepsRef.current = tidy(found.videoDraftSteps ?? found.steps.filter(hasVideoTime));
       setSteps(stepsRef.current);
       setCourse(found);
-    });
+    }
+
+    load();
     return () => {
       cancelled = true;
     };
-  }, [courseId, navigate, notify]);
+  }, [courseId, navigate, justCreated, location.pathname]);
 
   /** Saves a change to the course (and keeps the ref current for later saves). */
   const updateCourse = useCallback(async (patch) => {
@@ -354,7 +375,6 @@ function TourBuilder({
   onSave,
 }) {
   const navigate = useNavigate();
-  const { notify } = useToast();
   const videoRef = useRef(null);
   const resolvingRef = useRef(false); // finding a WebM's real duration (ignore time updates)
   const [videoUrl, setVideoUrl] = useState(null);
@@ -381,7 +401,7 @@ function TourBuilder({
     getMedia(course.sourceVideoId).then((blob) => {
       if (cancelled) return;
       if (!blob) {
-        notify("The video couldn't be found. Please add it again.", 'error');
+        toast.error("The video couldn't be found. Please add it again.");
         return;
       }
       url = URL.createObjectURL(blob);
@@ -391,7 +411,7 @@ function TourBuilder({
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [course.sourceVideoId, notify]);
+  }, [course.sourceVideoId]);
 
   const imageIds = useMemo(
     () => [...new Set(steps.map((s) => s.imageId).filter(Boolean))],
@@ -512,7 +532,7 @@ function TourBuilder({
       }
       createStep(imageId, videoTime);
     } catch {
-      notify("Couldn't take a picture of the video. Try again.", 'error');
+      toast.error("Couldn't take a picture of the video. Try again.");
     } finally {
       setBusy(false);
     }
@@ -539,15 +559,16 @@ function TourBuilder({
     // a stray drag can add one by accident: offer a one-click way back (the
     // picture stays, the other feature still uses it).
     if (region) {
-      notify('New feature added', 'info', {
-        action: {
-          label: 'Undo',
-          onClick: () => {
+      toast.info(({ closeToast }) => (
+        <UndoToast
+          message="New feature added"
+          closeToast={closeToast}
+          onUndo={() => {
             changeSteps((all) => all.filter((s) => s.id !== step.id));
             setEditingId((id) => (id === step.id ? cameFrom : id));
-          },
-        },
-      });
+          }}
+        />
+      ));
     }
     return step.id;
   };
@@ -620,7 +641,7 @@ function TourBuilder({
     if (!cutRange) return;
     const next = addCut(cuts, cutRange, duration);
     if (!next) {
-      notify('That would cut the whole video. Keep at least a moment of it.', 'error');
+      toast.error('That would cut the whole video. Keep at least a moment of it.');
       return;
     }
     const inside = stepsRef.current.filter((s) => cutAt(next, s.videoTime));
@@ -638,11 +659,15 @@ function TourBuilder({
     if (video) video.currentTime = t;
     setTime(t);
     // Removed features (and their pictures) can't come back, so Undo only without them.
-    notify(
-      'Part cut from the video',
-      'info',
-      inside.length ? undefined : { action: { label: 'Undo', onClick: () => onChangeCuts(cuts) } },
-    );
+    if (inside.length) toast.info('Part cut from the video');
+    else
+      toast.info(({ closeToast }) => (
+        <UndoToast
+          message="Part cut from the video"
+          closeToast={closeToast}
+          onUndo={() => onChangeCuts(cuts)}
+        />
+      ));
   };
 
   const restoreCut = (index) => onChangeCuts(cuts.filter((_, i) => i !== index));
@@ -687,7 +712,7 @@ function TourBuilder({
     try {
       await onSave();
     } catch {
-      notify("Couldn't save. Please try again.", 'error');
+      toast.error("Couldn't save. Please try again.");
       setBusy(false);
     }
   };

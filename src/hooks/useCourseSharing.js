@@ -33,7 +33,7 @@ import {
 } from '@/services/sharing/share';
 import { exportWalkthroughVideo, isVideoExportSupported } from '@/services/video/exportVideo';
 import { downloadBlob, slug } from '@/utils';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
 import { ShareLinkModal } from '@/components/course/ShareLinkModal';
 import { VideoExportOverlay } from '@/components/course/VideoExportOverlay';
 import { VideoQualityDialog } from '@/components/course/VideoQualityDialog';
@@ -61,7 +61,6 @@ const saveFormat = (format) => {
 /** @typedef {import('@/types').Course} Course */
 
 export function useCourseSharing() {
-  const { notify } = useToast();
   const [fallbackUrl, setFallbackUrl] = useState(null);
   const [fallbackEmbed, setFallbackEmbed] = useState(null);
   const [linkBusy, setLinkBusy] = useState(false);
@@ -78,20 +77,20 @@ export function useCourseSharing() {
         const url = buildShareUrl(course, await encodeShareableCourse(course));
         try {
           await navigator.clipboard.writeText(url);
-          notify('Link copied — anyone who opens it can watch this course', 'success');
+          toast.success('Link copied — anyone who opens it can watch this course');
           return true;
         } catch {
           setFallbackUrl(url); // clipboard blocked → let the user copy manually
           return false;
         }
       } catch {
-        notify('Could not create the share link', 'error');
+        toast.error('Could not create the share link');
         return false;
       } finally {
         setLinkBusy(false);
       }
     },
-    [notify],
+    [],
   );
 
   /** Builds the <iframe> embed snippet and copies it. Resolves true if copied. */
@@ -104,20 +103,20 @@ export function useCourseSharing() {
         const code = buildEmbedCode(buildEmbedUrl(course, encoded), course.title);
         try {
           await navigator.clipboard.writeText(code);
-          notify('Embed code copied — paste it into any web page', 'success');
+          toast.success('Embed code copied — paste it into any web page');
           return true;
         } catch {
           setFallbackEmbed(code);
           return false;
         }
       } catch {
-        notify('Could not create the embed code', 'error');
+        toast.error('Could not create the embed code');
         return false;
       } finally {
         setLinkBusy(false);
       }
     },
-    [notify],
+    [],
   );
 
   /** Asks for the quality, then records the walkthrough as a video and downloads it. */
@@ -125,12 +124,12 @@ export function useCourseSharing() {
     /** @param {Course} course */
     (course) => {
       if (!isVideoExportSupported()) {
-        notify('Video download is not supported in this browser. Try Chrome or Edge.', 'error');
+        toast.error('Video download is not supported in this browser. Try Chrome or Edge.');
         return;
       }
       setQualityFor(course);
     },
-    [notify],
+    [],
   );
 
   const recordVideo = useCallback(
@@ -149,31 +148,32 @@ export function useCourseSharing() {
           title: course.title,
           quality,
           format,
+          pace: course.pace,
           signal: controller.signal,
           onStage: (stage, fraction = 0) =>
             setVideo((v) => (v ? { ...v, stage, progress: stage === 'voice' ? fraction : 0 } : v)),
           onProgress: (progress) => setVideo((v) => (v ? { ...v, progress } : v)),
         });
         const suffix = format === 'web' ? '' : `-${format}`; // e.g. "-mobile-portrait"
-        downloadBlob(blob, `${slug(course.title) || 'walkthrough'}${suffix}.${extension}`);
+        const name = `${slug(course.title) || 'walkthrough'}${suffix}`;
+        downloadBlob(blob, `${name}.${extension}`);
         if (silentSteps > 0) {
-          notify(
+          toast.error(
             `Video downloaded — the AI voice couldn't load, so ${silentSteps} text step${silentSteps > 1 ? 's are' : ' is'} silent (check your internet)`,
-            'error',
           );
         } else {
-          notify('Video downloaded', 'success');
+          toast.success('Video downloaded');
         }
       } catch (err) {
         if (err?.name !== 'AbortError') {
-          notify(err instanceof Error ? err.message : 'Video download failed', 'error');
+          toast.error(err instanceof Error ? err.message : 'Video download failed');
         }
       } finally {
         abortRef.current = null;
         setVideo(null);
       }
     },
-    [notify],
+    [],
   );
 
   const cancelVideo = useCallback(() => abortRef.current?.abort(), []);

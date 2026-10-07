@@ -72,12 +72,18 @@ export function useAiVoicePrefetch(steps, { captionParts = false } = {}) {
     .filter((s) => !s.audioData && s.text?.trim())
     .flatMap((s) => (captionParts ? splitCaptionParts(s.text) : [s.text]));
   const key = texts.join('\u0000');
+  // The first time: at once — the voice engine starts cold (a few seconds) and
+  // the first step speaks within seconds of ▶. Later changes (typing in the
+  // editor) wait for a pause.
+  const started = useRef(false);
   useEffect(() => {
     if (!key || !isAiVoiceSupported()) return;
     let cancel = () => {};
+    const delay = started.current ? PREFETCH_DELAY_MS : 0;
+    started.current = true;
     const timer = setTimeout(() => {
       cancel = prefetchAiVoice(key.split('\u0000'));
-    }, PREFETCH_DELAY_MS);
+    }, delay);
     return () => {
       clearTimeout(timer);
       cancel();

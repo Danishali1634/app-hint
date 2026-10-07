@@ -99,6 +99,9 @@ export function isMediaInUse(course, mediaId) {
  */
 const DEFAULT_LABEL = /^step \d+((\.| · area )\d+)?$/i;
 
+/** True for a label the app made itself ("Step 3", "Step 3.2"): never translated or shown as text. */
+export const isDefaultLabel = (label) => !label?.trim() || DEFAULT_LABEL.test(label.trim());
+
 /**
  * MULTIPLE STEPS (sub-steps)
  * A main step can hold several sub-steps: areas on ONE screenshot, each with

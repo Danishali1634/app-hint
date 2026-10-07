@@ -75,6 +75,52 @@ export const LS_THEME = 'hint-studio-theme';
 export const LS_VOICE = 'hint-studio-voice-v2';
 /** LocalStorage key for the user's own Anthropic API key ("Improve with AI"). */
 export const LS_AI_KEY = 'hint-studio-anthropic-key';
+/** LocalStorage key for Hinglish words looked up once and saved (services/text/hinglish). */
+export const LS_HINGLISH_WORDS = 'hint-studio-hinglish-words';
+/** LocalStorage key for pronunciations the user fixed by hand (Settings → Check my courses). */
+export const LS_HINGLISH_OVERRIDES = 'hint-studio-hinglish-overrides';
+/** LocalStorage key for the voice-typing language last used (hinglish | hindi | english). */
+export const LS_DICTATION_LANG = 'hint-studio-dictation-lang';
+/** LocalStorage key: auto-fix Hinglish/English spelling while typing step text ('0' = off). */
+export const LS_AUTOFIX = 'hint-studio-autofix';
+/** LocalStorage key for the plan (free / trial / pro) + free-try usage. */
+export const LS_PLAN = 'hint-studio-plan';
+
+// ─── Plans (freemium) ────────────────────────────────────────────────────────
+// Everything is local for now (no payments yet). hooks/usePlan.js reads these;
+// to gate a new feature, add it to PRO_FEATURES and call tryFeature('key').
+
+/** Length of the "Try Pro free" trial. */
+export const TRIAL_DAYS = 14;
+
+/**
+ * Pro features. `freeUses` = how many times a Free user can try it before the
+ * upgrade dialog appears (0 = Pro only).
+ */
+export const PRO_FEATURES = {
+  screenRecording: {
+    label: 'Screen recording',
+    unit: 'recordings',
+    freeUses: 3,
+    pitch: 'Record your screen once and get every step made for you.',
+  },
+  bulkUpload: {
+    label: 'Bulk screenshot upload',
+    unit: 'bulk uploads',
+    freeUses: 5,
+    pitch: 'Drop a whole folder of screenshots — each one becomes its own step.',
+  },
+};
+
+/** "Free vs Pro" rows in the upgrade dialog. */
+export const PLAN_COMPARISON = [
+  { label: 'Unlimited courses & steps', free: true, pro: true },
+  { label: 'Share links & embeds', free: true, pro: true },
+  { label: 'Screen recording → steps', free: '3 tries', pro: 'Unlimited' },
+  { label: 'Bulk screenshot upload', free: '5 tries', pro: 'Unlimited' },
+  { label: 'Keep courses forever', free: '90 days', pro: true },
+  { label: 'Priority support', free: false, pro: true },
+];
 
 // ─── Walkthrough timing (ms) ─────────────────────────────────────────────────
 // Shared by the live player (WalkthroughPlayer) and the video export
@@ -85,7 +131,7 @@ export const WALKTHROUGH_TIMING = {
   enter: 650, // .hs-stage-emerge / .hs-stage-fade-in
   overviewFirst: 1200, // first step: give time to recognise the page
   overview: 450, // later steps: the screen just opened — move on quickly
-  focus: 1050, // .hs-camera zoom/glide (1000ms)
+  focus: 1450, // camera zoom + focus morph (FocusCamera) (utils/camera.glideMs = 95% of it, ~1.4 s): slow enough to follow
   // Another screenshot of the same screen swaps in as the camera starts to glide.
   // Short on purpose: a long crossfade between two frames of a recording (where
   // things moved) shows both frames at once, a ghosted double image. A quick

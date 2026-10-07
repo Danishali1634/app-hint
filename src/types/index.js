@@ -66,6 +66,9 @@
  *                                      together with `region` (utils/course.getStepTargets)
  * @property {string[]} [extraTexts]    Descriptions of targets 2, 3 … (target 1 = `text`).
  *                                      When written, each target is explained in turn.
+ * @property {{ en?: Record<string, string>, hi?: Record<string, string>, deva?: Record<string, string> }} [translations]
+ *   Every language version of the texts (en, hi = Hinglish, deva = हिंदी), after the narrator switched language
+ *   (services/text/courseLanguage); keys "text", "label", "extra:0" …
  * @property {StepAction} [action]      Default 'click' (see utils/course.getStepAction)
  * @property {string | null} audioId    Key of the recorded audio Blob in the media store
  * @property {string} [typeValue]       'type' steps: sample value typed in the walkthrough (optional)
@@ -103,6 +106,8 @@
  *                                          the recording cut away, seconds (services/video/cuts)
  * @property {Step[]} [videoDraftSteps]      "Create by video": steps in progress, autosaved;
  *                                          written to `steps` only by "Save walkthrough"
+ * @property {number} [pace]                 How fast it plays (player and video): 1 = normal,
+ *                                           0.5 = half speed, 1.5 = faster (utils/pace)
  * @property {number} createdAt              Epoch ms
  * @property {number} updatedAt              Epoch ms — library sorts by this; drives auto-delete
  * @property {number | null} publishedAt     Epoch ms, set when published
@@ -127,7 +132,7 @@
  * @typedef {Object} ToastMessage
  * @property {string} id
  * @property {string} message
- * @property {'info' | 'error' | 'success'} type
+ * @property {'info' | 'error' | 'success' | 'warning'} type
  */
 
 export {};

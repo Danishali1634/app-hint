@@ -160,7 +160,6 @@ export function LibraryPage() {
         </p>
       )}
 
-
       {library.overlays}
     </div>
   );

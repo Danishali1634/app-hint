@@ -9,6 +9,15 @@ export function Spinner() {
   );
 }
 
+/** Spinner centred on the whole screen — used while checking who is signed in. */
+export function FullScreenSpinner() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-paper dark:bg-paper-dark">
+      <Spinner />
+    </div>
+  );
+}
+
 /** Spinner centred in the page body — used while a page loads its data. */
 export function PageSpinner() {
   return (

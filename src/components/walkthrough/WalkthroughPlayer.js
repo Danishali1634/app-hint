@@ -85,18 +85,18 @@ import { useElementSize } from '@/hooks/useElementSize';
 import { useImageAspectRatios } from '@/hooks/useImageAspectRatios';
 import { hasNarration, useAiVoicePrefetch, useNarration } from '@/hooks/useNarration';
 import { Spinner } from '@/components/ui/Spinner';
-import { WALKTHROUGH_TIMING } from '@/constants';
 import { CaptionContent, TextOnlyStage, WalkthroughStage } from './WalkthroughStage';
-import { clickOrigin, isClickAction } from '@/utils/course';
+import { clickOrigin, getFocusRegion, isClickAction } from '@/utils/course';
 import { readingPartMs, splitCaptionParts } from '@/utils/captionParts';
+import { afterVoicePauseMs, pacedTiming, paceScale } from '@/utils/pace';
 import { StepList, StepsToggle, Timeline } from './Timeline';
 import { OutroCard } from './OutroCard';
-import { clickCount, transitionFor } from '@/services/video/timeline';
+import { clickCount, samePage, transitionFor } from '@/services/video/timeline';
+import { markSamePages } from '@/utils/samePage';
 
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
 
 /** Phase durations, shared with the video export. */
-const DURATION = WALKTHROUGH_TIMING;
 
 /** The step whose screenshot sets the frame: the first sub-step of the same Global Step. */
 function frameRefId(steps, index) {
@@ -156,10 +156,11 @@ const COMPACT_ICON_BUTTON_CLASS_DARK =
  *   hideStepList?: boolean,                             // no side list of steps: more room for the picture
  *   dockCaption?: boolean,                              // caption always UNDER the picture, never over it
  *   holdMs?: number,                                    // extra time on each step after it is read (tutorials: time to look)
+ *   pace?: number,                                      // the course's pace: 0.5 = half speed (utils/pace)
  * }} props
  */
 export function WalkthroughPlayer({
-  steps,
+  steps: givenSteps,
   title,
   onExit,
   embedded = false,
@@ -173,7 +174,12 @@ export function WalkthroughPlayer({
   hideStepList = false,
   dockCaption = false,
   holdMs = 0,
+  pace = 1,
 }) {
+  // Separate screenshots of one page play as one continuous motion (utils/samePage).
+  const steps = useSamePageSteps(givenSteps);
+  const T = pacedTiming(pace);
+  const paceK = paceScale(pace);
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState('enter');
   const [runId, setRunId] = useState(0);
@@ -256,15 +262,12 @@ export function WalkthroughPlayer({
       if (!to) return;
       const fromClick = !!from?.imageData && !!from.region && isClickAction(from);
 
-      // Same screenshot — or another screenshot of the SAME Global Step (the same
-      // page in another state): the camera glides straight on; a new screenshot
+      // Same screenshot — or another screenshot of the same page (a sub-step, or
+      // a shot that looks like it: timeline.samePage): the camera glides straight
+      // on and the focus travels from the old target to the new one; a new screenshot
       // crossfades in inside the moving camera (WalkthroughStage), so all its
       // sub-steps feel like one page.
-      const samePage =
-        from?.imageData &&
-        to.imageData &&
-        (from.imageData === to.imageData || (from.groupId && from.groupId === to.groupId));
-      if (smooth && i !== index && samePage) {
+      if (smooth && i !== index && samePage(from, to)) {
         setContinued(true);
         setLeaving(null);
         setEnterOrigin(null);
@@ -418,23 +421,28 @@ export function WalkthroughPlayer({
   const phaseDuration = (() => {
     switch (phase) {
       case 'enter':
-        return DURATION.enter;
+        return T.enter;
       case 'overview':
         // The very first screen gets a moment; later screens flow straight on.
-        return index === 0 && !enterOrigin ? DURATION.overviewFirst : DURATION.overview;
+        return index === 0 && !enterOrigin ? T.overviewFirst : T.overview;
       case 'focus':
-        return DURATION.focus;
+        return T.focus;
       case 'point':
-        return DURATION.point;
+        return T.point;
       case 'narrate':
         if (stepHasNarration) return null; // voice ends it
         return captionParts.length > 1
-          ? captionParts.reduce((sum, p) => sum + readingPartMs(p), 0)
-          : DURATION.silentNarrate;
+          ? captionParts.reduce((sum, p) => sum + readingPartMs(p) * paceK, 0)
+          : T.silentNarrate;
       case 'action':
-        return (isClick ? DURATION.clickAction * clickCount(step) : DURATION.lookAction) + holdMs;
+        return (
+          (isClick ? T.clickAction * clickCount(step) : T.lookAction) +
+          holdMs +
+          // A slow pace pauses after each spoken line (the Timeline plans the same).
+          (step?.audioData || step?.text?.trim() ? afterVoicePauseMs(pace) : 0)
+        );
       case 'done':
-        return autoAdvance && !isLast ? DURATION.doneAutoResume : null; // user ends it
+        return autoAdvance && !isLast ? T.doneAutoResume : null; // user ends it
       default:
         return null;
     }
@@ -474,9 +482,12 @@ export function WalkthroughPlayer({
   const hasNextSilentPart = silentPart < captionParts.length - 1;
   useEffect(() => {
     if (phase !== 'narrate' || stepHasNarration || !playing || !hasNextSilentPart) return;
-    const timer = setTimeout(() => setSilentPart((k) => k + 1), readingPartMs(silentPartText));
+    const timer = setTimeout(
+      () => setSilentPart((k) => k + 1),
+      readingPartMs(silentPartText) * paceK,
+    );
     return () => clearTimeout(timer);
-  }, [phase, stepHasNarration, playing, hasNextSilentPart, silentPartText]);
+  }, [phase, stepHasNarration, playing, hasNextSilentPart, silentPartText, paceK]);
 
   // Pause / resume the voice with the Play button.
   useEffect(() => {
@@ -608,6 +619,10 @@ export function WalkthroughPlayer({
   const showDockedCaption = hasImage && reserveDocked && captionPhase;
   const showCompactCaption = hasImage && compact && captionPhase;
   const isFinished = phase === 'done' && isLast;
+  // A continued step's camera travels from the previous step's area (pull back, glide in).
+  const fromRegion =
+    continued && steps[index - 1]?.imageData ? getFocusRegion(steps[index - 1]) : null;
+
   const timelineProps = {
     steps,
     index,
@@ -616,6 +631,7 @@ export function WalkthroughPlayer({
     playing: playing && hasStarted && ready && !isFinished,
     finished: isFinished,
     voiceMs,
+    pace,
     onSeek: seekTo,
     onInsert: onInsertStep,
   };
@@ -677,6 +693,8 @@ export function WalkthroughPlayer({
             <WalkthroughStage
               key={`stage-${stageKey}`}
               continued={continued}
+              fromRegion={fromRegion}
+              pace={pace}
               step={step}
               stepNumber={index + 1}
               phase={phase}
@@ -844,6 +862,8 @@ export function WalkthroughPlayer({
               <WalkthroughStage
                 key={`stage-${stageKey}`}
                 continued={continued}
+                fromRegion={fromRegion}
+                pace={pace}
                 step={step}
                 stepNumber={index + 1}
                 phase={phase}
@@ -931,6 +951,7 @@ export function WalkthroughPlayer({
             steps={steps}
             index={index}
             voiceMs={voiceMs}
+            pace={pace}
             onSeek={seekTo}
             // onClose={() => setStepsOpen(false)}
             className="hs-caption-in max-h-56 md:max-h-none md:w-72 lg:w-80 flex-shrink-0 border-t md:border-t-0 md:border-l border-line dark:border-line-dark"
@@ -957,4 +978,20 @@ export function WalkthroughPlayer({
       </div>
     </div>
   );
+}
+
+/**
+ * The steps with separate screenshots of one page marked (utils/samePage),
+ * once those screenshots have been read; until then, the steps as given.
+ */
+function useSamePageSteps(steps) {
+  const [marked, setMarked] = useState({ from: null, steps: null });
+  useEffect(() => {
+    let live = true;
+    markSamePages(steps).then((result) => live && setMarked({ from: steps, steps: result }));
+    return () => {
+      live = false;
+    };
+  }, [steps]);
+  return marked.from === steps ? marked.steps : steps;
 }

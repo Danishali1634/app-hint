@@ -91,23 +91,45 @@
  * Timings here must match the phase durations in WalkthroughPlayer.js.
  * ─────────────────────────────────────────────────────────────────────────── */
 
-/* The camera layer: zooms/pans the screenshot. */
-.hs-camera {
-  transform-origin: 0 0;
-  transition: transform 1000ms cubic-bezier(0.65, 0, 0.35, 1);
-  /* No permanent will-change: with it, Chrome rasterises the screenshot once at
-     1× and only stretches that bitmap when the camera zooms in (blurry text).
-     Without it the browser redraws it sharp at the zoomed scale. */
+/* ── Motion system ─────────────────────────────────────────────────────────
+ * ONE motion language for every step change, so a walkthrough reads as one
+ * continuous journey of attention, never "animation 1 ended, animation 2
+ * started". The focus is ONE persistent object (walkthrough/FocusCamera):
+ *   focus enter    first focus on a screen: the ring settles in like a lens
+ *                  (scale 1.12 → 1, fading in), the dim follows softly  .hs-focus-enter
+ *   focus move     same page: the SAME focus morphs (x, y, w, h, radius) to the
+ *                  next target on the camera's clock — never faded, never
+ *                  recreated (hooks/useFocusMotion, utils/focusMotion)
+ *   focus arrive   the target receives attention: a calm glow, no bounce   .hs-focus-arrive
+ *   caption enter  slides in from where the focus came from (--hs-from-x/y)  .hs-caption-in
+ *   step number    rolls to the next number                                  .hs-count-in
+ * Durations follow the course's pace (WalkthroughStage sets --hs-glide). The
+ * video export draws the same moves (services/video/renderFrame).
+ * ─────────────────────────────────────────────────────────────────────── */
+:root {
+  --hs-ease-move: cubic-bezier(0.65, 0, 0.35, 1); /* between targets: smooth both ends */
+  --hs-ease-enter: cubic-bezier(0.22, 1, 0.36, 1); /* arriving: fast, then a gentle settle */
+}
+
+/* The camera and the focus are moved frame by frame from JS (FocusCamera), on
+   one clock, so the focus can never lag behind the screenshot. No permanent
+   will-change on the camera: with it, Chrome rasterises the screenshot once at
+   1× and only stretches that bitmap when the camera zooms in (blurry text). */
+
+/* The focus layer (dim + rings) only fades when it first appears on a screen
+   or a step has no area — never to swap one focus for another. */
+.hs-focus-layer {
+  transition: opacity var(--hs-fade, 500ms) ease var(--hs-fade-delay, 0ms);
 }
 
 /* Overlays positioned in stage % (spotlight, ring, cursor target) move with the camera. */
 .hs-follow-camera {
   transition:
-    left 1000ms cubic-bezier(0.65, 0, 0.35, 1),
-    top 1000ms cubic-bezier(0.65, 0, 0.35, 1),
-    width 1000ms cubic-bezier(0.65, 0, 0.35, 1),
-    height 1000ms cubic-bezier(0.65, 0, 0.35, 1),
-    opacity 600ms ease;
+    left var(--hs-glide, 1380ms) var(--hs-ease-move),
+    top var(--hs-glide, 1380ms) var(--hs-ease-move),
+    width var(--hs-glide, 1380ms) var(--hs-ease-move),
+    height var(--hs-glide, 1380ms) var(--hs-ease-move),
+    opacity var(--hs-fade, 500ms) ease var(--hs-fade-delay, 0ms);
 }
 
 /* Step enters: grows out of the previously clicked button ("click → this opens"). */
@@ -132,15 +154,16 @@
 
 /* Step enters without a click origin (first step, Prev, "look" steps). */
 .hs-stage-fade-in {
-  animation: hs-stage-fade-in 600ms ease-out both;
+  /* First screen: settles into place (no pop) before anything is pointed at. */
+  animation: hs-stage-fade-in 650ms var(--hs-ease-enter) both;
 }
 @keyframes hs-stage-fade-in {
   from {
-    transform: scale(0.97);
+    transform: translateY(8px) scale(0.985);
     opacity: 0;
   }
   to {
-    transform: scale(1);
+    transform: none;
     opacity: 1;
   }
 }
@@ -295,8 +318,8 @@
 /* Animated mouse pointer. */
 .hs-cursor {
   transition:
-    left 850ms cubic-bezier(0.22, 1, 0.36, 1),
-    top 850ms cubic-bezier(0.22, 1, 0.36, 1),
+    left var(--hs-point, 850ms) cubic-bezier(0.22, 1, 0.36, 1),
+    top var(--hs-point, 850ms) cubic-bezier(0.22, 1, 0.36, 1),
     opacity 300ms ease;
 }
 .hs-cursor-idle {
@@ -348,7 +371,8 @@
 }
 @keyframes hs-caption-in {
   from {
-    transform: translateY(10px);
+    /* From where the focus came from (WalkthroughStage sets the vars), else from below. */
+    transform: translate(var(--hs-from-x, 0px), var(--hs-from-y, 10px));
     opacity: 0;
   }
   to {
@@ -778,10 +802,62 @@
   filter: none;
 }
 
+/* Motion system (see the top of the walkthrough section). */
+.hs-focus-enter {
+  animation: hs-focus-enter calc(var(--hs-glide, 1380ms) * 0.7) var(--hs-ease-enter)
+    calc(var(--hs-glide, 1380ms) * 0.3) both;
+}
+@keyframes hs-focus-enter {
+  from {
+    opacity: 0;
+    transform: scale(1.12);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.hs-focus-arrive {
+  animation:
+    hs-focus-arrive 650ms ease-out both,
+    highlight-pulse 1.6s ease-in-out 650ms infinite;
+}
+@keyframes hs-focus-arrive {
+  0% {
+    box-shadow:
+      0 0 0 4px rgba(21, 112, 239, 0.3),
+      0 0 24px rgba(21, 112, 239, 0.4);
+  }
+  45% {
+    box-shadow:
+      0 0 0 7px rgba(21, 112, 239, 0.35),
+      0 0 40px rgba(21, 112, 239, 0.55);
+  }
+  100% {
+    box-shadow:
+      0 0 0 4px rgba(21, 112, 239, 0.3),
+      0 0 24px rgba(21, 112, 239, 0.4);
+  }
+}
+.hs-count-in {
+  display: inline-block;
+  animation: hs-count-in 320ms var(--hs-ease-enter) both;
+}
+@keyframes hs-count-in {
+  from {
+    transform: translateY(60%);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
 /* Respect the OS "reduce motion" setting: keep the story, drop the motion. */
 @media (prefers-reduced-motion: reduce) {
-  .hs-camera,
   .hs-follow-camera,
+  .hs-focus-layer,
   .hs-cursor {
     transition-duration: 1ms !important;
   }
@@ -791,6 +867,9 @@
   .hs-stage-exit-fade,
   .hs-ring-pulse,
   .hs-ring-flash,
+  .hs-focus-enter,
+  .hs-focus-arrive,
+  .hs-count-in,
   .hs-cursor-idle,
   .hs-cursor-press,
   .hs-ripple,

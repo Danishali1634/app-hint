@@ -37,9 +37,10 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useCourseList } from '@/hooks/useCourseList';
+import { useLoading } from '@/hooks/useLoading';
 import { deleteCourse } from '@/services/storage/db';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
 import { searchCourses } from '@/utils/search';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { Tooltip } from '@/components/ui/Tooltip';
@@ -86,8 +87,8 @@ export function Sidebar({ open, onClose }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const activeId = activeCourseId(location.pathname);
-  const { notify } = useToast();
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const { run } = useLoading();
 
   const confirmDelete = async () => {
     const target = deleteTarget;
@@ -95,8 +96,16 @@ export function Sidebar({ open, onClose }) {
     if (!target) return;
     // Leave the course's pages before it disappears under them.
     if (target.id === activeId) navigate('/');
-    await deleteCourse(target.id);
-    notify(`“${target.title}” deleted`);
+    try {
+      // Global loading screen: locked while deleting, always unlocked after.
+      const done = await run(async () => {
+        await deleteCourse(target.id);
+        return true;
+      }, 'Deleting the course…');
+      if (done) toast(`“${target.title}” deleted`);
+    } catch (err) {
+      toast.error(`Could not delete the course: ${err.message}`);
+    }
   };
 
   const visible = useMemo(() => {

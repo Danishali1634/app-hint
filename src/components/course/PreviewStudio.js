@@ -34,7 +34,7 @@ import { formatTime, stepTimings } from '@/components/walkthrough/Timeline';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Spinner } from '@/components/ui/Spinner';
 import { StepEditPanel } from '@/components/course/StepEditPanel';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
 
 /** @typedef {import('@/types').Course} Course */
 
@@ -63,7 +63,6 @@ function newStep(number) {
  * }} props
  */
 export function PreviewStudio({ course, onSave, onClose }) {
-  const { notify } = useToast();
   const [saved, setSaved] = useState(course); // last saved version
   const [draft, setDraft] = useState(course);
   const [walkSteps, setWalkSteps] = useState(null);
@@ -135,7 +134,7 @@ export function PreviewStudio({ course, onSave, onClose }) {
   /** Inserts a blank step at `position` (0 = before step 1) and opens it. */
   const insertStepAt = (position) => {
     if (draft.steps.length >= MAX_STEPS) {
-      notify(`A course can have up to ${MAX_STEPS} steps`, 'error');
+      toast.error(`A course can have up to ${MAX_STEPS} steps`);
       return;
     }
     setDraft((d) => {
@@ -170,7 +169,7 @@ export function PreviewStudio({ course, onSave, onClose }) {
     setSaved(next);
     setDraft(next);
     setJustSaved(true);
-    notify('Saved — your walkthrough is updated', 'success');
+    toast.success('Saved — your walkthrough is updated');
   };
 
   const discard = async () => {
@@ -179,7 +178,7 @@ export function PreviewStudio({ course, onSave, onClose }) {
     setDraft(saved);
     setCurrent((c) => Math.min(c, saved.steps.length - 1));
     setEditMode(false);
-    notify('Changes discarded — nothing went live');
+    toast('Changes discarded — nothing went live');
   };
 
   const requestClose = () => {
@@ -212,7 +211,10 @@ export function PreviewStudio({ course, onSave, onClose }) {
       break;
     }
   }
-  const timings = useMemo(() => (walkSteps ? stepTimings(walkSteps) : null), [walkSteps]);
+  const timings = useMemo(
+    () => (walkSteps ? stepTimings(walkSteps, {}, draft.pace) : null),
+    [walkSteps, draft.pace],
+  );
   const timeLabel = timings?.spans[frame] ? formatTime(timings.spans[frame].start) : undefined;
 
   return (
@@ -301,6 +303,7 @@ export function PreviewStudio({ course, onSave, onClose }) {
               <WalkthroughPlayer
                 steps={walkSteps}
                 title={draft.title}
+                pace={draft.pace}
                 variant="inline"
                 onIndexChange={onIndexChange}
                 onPlayingChange={onPlayingChange}

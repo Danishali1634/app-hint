@@ -1,6 +1,7 @@
 /**
  * @file Slim top bar above every authoring page:
- *   [panel toggle] (logo when the sidebar is closed) ··· Courses · New course · ⚙ · theme
+ *   [panel toggle] (logo when the sidebar is closed) ··· plan · Courses · New course · ⚙ · theme
+ * The plan pill ("Try Pro free" / "Pro trial · 12d" / "Pro") opens the upgrade dialog.
  * ⚙ opens SettingsDialog (AI voice + optional AI key).
  * The toggle opens/closes the course sidebar (components/layout/Sidebar.js);
  * the open/closed default per page is decided by Layout in AppRouter.
@@ -11,9 +12,18 @@
 import { useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { Tooltip } from '@/components/ui/Tooltip';
-import { Mic, Plus, PanelLeftOpen, PanelLeftClose, LibraryBig, Settings } from 'lucide-react';
+import {
+  Mic,
+  Plus,
+  PanelLeftOpen,
+  PanelLeftClose,
+  LibraryBig,
+  Settings,
+  Sparkles,
+} from 'lucide-react';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { SettingsDialog } from '@/components/ui/SettingsDialog';
+import { usePlan } from '@/hooks/usePlan';
 
 /** @param {{ sidebarOpen: boolean, onToggleSidebar: () => void }} props */
 export function Header({ sidebarOpen, onToggleSidebar }) {
@@ -50,6 +60,7 @@ export function Header({ sidebarOpen, onToggleSidebar }) {
         </div>
 
         <nav className="flex items-center gap-1.5">
+          <PlanPill />
           <NavLink
             to="/courses"
             className={({ isActive }) =>
@@ -94,5 +105,33 @@ export function Header({ sidebarOpen, onToggleSidebar }) {
         {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       </div>
     </header>
+  );
+}
+
+/** "Try Pro free" for Free users; "Pro trial · Nd" / "Pro" once unlocked. */
+function PlanPill() {
+  const { plan, trialUsed, trialDaysLeft, openUpgrade } = usePlan();
+  const label =
+    plan === 'pro'
+      ? 'Pro'
+      : plan === 'trial'
+        ? `Pro trial · ${trialDaysLeft}d`
+        : trialUsed
+          ? 'Upgrade'
+          : 'Try Pro free';
+
+  return (
+    <button
+      onClick={() => openUpgrade()}
+      className={`flex items-center gap-1.5 px-3 h-9 rounded-lg text-sm font-semibold transition-all ${
+        plan === 'free'
+          ? 'text-accent dark:text-accent-ink-dark bg-accent-soft dark:bg-accent-soft-dark ring-1 ring-accent/20 hover:ring-accent/50'
+          : 'text-white bg-gradient-to-r from-accent to-violet shadow-glow hover:brightness-110'
+      }`}
+      title="Your plan"
+    >
+      <Sparkles className="w-4 h-4" />
+      <span className="hidden md:inline">{label}</span>
+    </button>
   );
 }

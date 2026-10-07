@@ -72,7 +72,7 @@ export function SharedCoursePage() {
       </div>
 
       <div className="h-[min(72vh,720px)] min-h-[420px]">
-        <WalkthroughPlayer steps={steps} title={title} variant="inline" />
+        <WalkthroughPlayer steps={steps} title={title} variant="inline" pace={shareable.c.pace} />
       </div>
 
       <CourseInfo title={title} pageName={pageName} description={description} steps={steps} />

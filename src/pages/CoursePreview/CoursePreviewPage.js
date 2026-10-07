@@ -18,6 +18,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Pencil, CheckCircle2 } from 'lucide-react';
 import { getCourse } from '@/services/storage/db';
+import { toast } from 'react-toastify';
 import { buildWalkthroughSteps } from '@/services/sharing/share';
 import { WalkthroughPlayer } from '@/components/walkthrough/WalkthroughPlayer';
 import { CourseInfo } from '@/components/walkthrough/CourseInfo';
@@ -35,15 +36,22 @@ export function CoursePreviewPage() {
   const load = useCallback(async () => {
     if (!courseId) return;
     setLoading(true);
-    const loaded = await getCourse(courseId);
-    if (!loaded) {
+    try {
+      const loaded = await getCourse(courseId);
+      if (!loaded) {
+        navigate('/');
+        return;
+      }
+      setCourse(loaded);
+      // Resolve media once up front so playback starts instantly.
+      setSteps(await buildWalkthroughSteps(loaded));
+    } catch (error) {
+      // Never leave the page spinning when the API fails.
+      toast.error(`Could not open the course: ${error.message}`);
       navigate('/');
-      return;
+    } finally {
+      setLoading(false);
     }
-    setCourse(loaded);
-    // Resolve media once up front so playback starts instantly.
-    setSteps(await buildWalkthroughSteps(loaded));
-    setLoading(false);
   }, [courseId, navigate]);
 
   useEffect(() => {
@@ -79,7 +87,13 @@ export function CoursePreviewPage() {
 
       {/* Player: inline, paused until the viewer clicks ▶ */}
       <div className="h-[min(72vh,720px)] min-h-[420px]">
-        <WalkthroughPlayer key={course.id} steps={steps} title={course.title} variant="inline" />
+        <WalkthroughPlayer
+          key={course.id}
+          steps={steps}
+          title={course.title}
+          variant="inline"
+          pace={course.pace}
+        />
       </div>
 
       <CourseInfo

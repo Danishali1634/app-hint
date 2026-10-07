@@ -3,8 +3,19 @@
  * Anthropic API key used by "Improve with AI".
  *
  * VOICE: the AI voices (services/audio/neuralVoice AI_VOICES) — the SAME voice
- * is used by the walkthrough and the downloaded video. ▶ plays a sample (the
- * first play of a voice downloads it once). Picking a voice or speed is only
+ * is used by the walkthrough and the downloaded video. English and Hindi voices
+ * are listed in two groups; the user picks one (Hindi is never chosen
+ * automatically). Hindi voices show their licence: non-commercial.
+ *
+ * TEST: every AI voice has a "Test" button that speaks the editable test
+ * sentence at the draft speed, so voices can be compared before choosing.
+ * Testing does NOT select a voice. It plays the AI voice itself (aiVoiceUrl),
+ * never the browser fallback, and shows the one-time download (about 60 MB)
+ * as a percentage. Under the Hindi voices: the sentence as they will read it,
+ * updated as you type (unfamiliar words are looked up online and saved, unless
+ * "Look up unfamiliar words online" is off), and the saved-word count + Clear.
+ *
+ * Picking a voice or speed is only
  * a DRAFT — nothing changes until "Save voice"; closing or Cancel keeps the
  * saved choice.
  *   Browsers that can't run the AI voice keep the old list of their own voices:
@@ -33,7 +44,25 @@ import {
   previewSpeech,
   stopPreviewSpeech,
 } from '@/services/audio/tts';
-import { AI_VOICES, isAiVoiceSupported, VIDEO_VOICE_ID } from '@/services/audio/neuralVoice';
+import {
+  AI_VOICES,
+  aiVoiceGender,
+  isAiVoiceSupported,
+  isHindiVoice,
+  narrationLanguage,
+  VIDEO_VOICE_ID,
+} from '@/services/audio/neuralVoice';
+import { matchSpeakerGender } from '@/services/text/speakerGender';
+import { VoiceTestButton } from '@/components/ui/VoiceTestButton';
+import { PronunciationReview } from '@/components/ui/PronunciationReview';
+import { NarratorVoicePicker } from '@/components/course/NarratorVoicePicker';
+import { demoLine } from '@/services/text/demoLines';
+import {
+  forgetLearnedWords,
+  learnedWordCount,
+  toDevanagari,
+  toDevanagariAsync,
+} from '@/services/text/hinglish';
 import {
   getAiKey,
   getVoiceSettings,
@@ -51,12 +80,39 @@ export function SettingsDialog({ onClose }) {
   const [voiceSettings, setVoiceState] = useState(() => getVoiceSettings()); // draft
   const [voiceSaved, setVoiceSaved] = useState(false);
   const [playingURI, setPlayingURI] = useState(null);
+  const [testText, setTestText] = useState('');
   const [aiKey, setAiKeyState] = useState(() => getAiKey());
   const [keySaved, setKeySaved] = useState(false);
 
   // Voices load asynchronously in most browsers.
   useEffect(() => onVoicesChanged(() => setVoices(listVoices())), []);
   useEffect(() => stopPreviewSpeech, []);
+
+  // "Hindi voices read: …" — live while typing; lookups wait for a 400 ms pause.
+  // With a Hindi voice selected, it shows that voice's reading (its gender's forms).
+  const [hindiPreview, setHindiPreview] = useState(() => toDevanagari(SAMPLE_TEXT));
+  const [savedWords, setSavedWords] = useState(() => learnedWordCount());
+  const lookup = voiceSettings.hinglishLookup;
+  const draftVoiceId = voiceSettings.aiVoiceId ?? VIDEO_VOICE_ID;
+  const previewVoice = isHindiVoice(draftVoiceId)
+    ? AI_VOICES.find((v) => v.id === draftVoiceId)
+    : null;
+  const previewGender = previewVoice ? aiVoiceGender(previewVoice.id) : null;
+  useEffect(() => {
+    const text = matchSpeakerGender(testText.trim() || SAMPLE_TEXT, previewGender);
+    setHindiPreview(toDevanagari(text));
+    let stale = false;
+    const timer = setTimeout(async () => {
+      const converted = await toDevanagariAsync(text, { lookup });
+      if (stale) return;
+      setHindiPreview(converted);
+      setSavedWords(learnedWordCount());
+    }, 400);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [testText, lookup, previewGender]);
   useEffect(() => {
     const handleKeyDown = (e) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', handleKeyDown);
@@ -72,10 +128,18 @@ export function SettingsDialog({ onClose }) {
   const voiceDirty =
     voiceSettings.voiceURI !== savedVoice.voiceURI ||
     voiceSettings.rate !== savedVoice.rate ||
-    aiVoiceOf(voiceSettings) !== aiVoiceOf(savedVoice);
+    aiVoiceOf(voiceSettings) !== aiVoiceOf(savedVoice) ||
+    voiceSettings.hinglishLookup !== savedVoice.hinglishLookup;
 
   /** Changes the DRAFT only. */
   const updateVoice = (patch) => setVoiceState((v) => ({ ...v, ...patch }));
+
+  /** AI voice settings: saved at once (the narrator panel saves its own changes too). */
+  const saveNow = (patch) => {
+    updateVoice(patch);
+    setVoiceSettings(patch);
+    setSavedVoice((v) => ({ ...v, ...patch }));
+  };
 
   const saveVoice = () => {
     setVoiceSettings(voiceSettings);
@@ -94,73 +158,11 @@ export function SettingsDialog({ onClose }) {
     }
     updateVoice({ voiceURI });
     setPlayingURI(key);
-    previewSpeech(SAMPLE_TEXT, () => setPlayingURI(null), {
+    // The demo line in the narrator's language, like every other preview.
+    previewSpeech(demoLine('intro', narrationLanguage()), () => setPlayingURI(null), {
       voiceURI,
       rate: voiceSettings.rate,
     });
-  };
-
-  /** ▶ an AI voice at the draft speed, without saving (first play downloads it). */
-  const playAi = (aiVoiceId) => {
-    const key = `ai:${aiVoiceId}`;
-    if (playingURI === key) {
-      stopPreviewSpeech();
-      setPlayingURI(null);
-      return;
-    }
-    updateVoice({ aiVoiceId });
-    setPlayingURI(key);
-    previewSpeech(SAMPLE_TEXT, () => setPlayingURI(null), {
-      aiVoiceId,
-      rate: voiceSettings.rate,
-    });
-  };
-
-  const renderAiVoice = (voice) => {
-    const active = aiVoiceOf(voiceSettings) === voice.id;
-    const playing = playingURI === `ai:${voice.id}`;
-    return (
-      <li key={voice.id}>
-        <div
-          className={`flex items-center gap-3 px-3 py-2 rounded-xl border transition-colors ${
-            active
-              ? 'border-accent bg-accent/5 dark:bg-accent/10'
-              : 'border-transparent hover:bg-paper-2 dark:hover:bg-paper-2-dark'
-          }`}
-        >
-          <button
-            onClick={() => updateVoice({ aiVoiceId: voice.id })}
-            className="flex-1 min-w-0 text-left"
-            aria-pressed={active}
-          >
-            <span className="flex items-center gap-2 text-sm font-medium text-ink dark:text-ink-soft-dark">
-              {voice.name}
-              {voice.id === VIDEO_VOICE_ID && (
-                <span className="px-1.5 py-px rounded-full text-[10px] font-bold uppercase tracking-wider bg-accent text-white">
-                  Default
-                </span>
-              )}
-              {active && <Check className="w-4 h-4 text-accent" />}
-            </span>
-            <span className="block text-[11px] text-ink-faint dark:text-ink-faint-dark">
-              {voice.description}
-              {active ? ' · selected' : ''}
-            </span>
-          </button>
-          <button
-            onClick={() => playAi(voice.id)}
-            className="w-8 h-8 rounded-full flex items-center justify-center text-accent hover:bg-accent/10"
-            aria-label={playing ? `Stop ${voice.name}` : `Listen to ${voice.name}`}
-          >
-            {playing ? (
-              <Square className="w-3.5 h-3.5" fill="currentColor" />
-            ) : (
-              <Volume2 className="w-4 h-4" />
-            )}
-          </button>
-        </div>
-      </li>
-    );
   };
 
   const saveKey = () => {
@@ -290,14 +292,75 @@ export function SettingsDialog({ onClose }) {
             {aiVoiceSupported ? (
               <>
                 <p className="text-xs text-ink-soft dark:text-ink-faint-dark mt-1 mb-3">
-                  Reads steps that have text but no recorded voice — the same voice in the
-                  walkthrough and in the downloaded video.
+                  Your narrator for every walkthrough and video. Changes apply everywhere straight
+                  away — each one plays so you can hear it.
                 </p>
-                <ul className="space-y-1">{AI_VOICES.map(renderAiVoice)}</ul>
-                <p className="mt-2 text-[11px] text-ink-faint dark:text-ink-faint-dark">
-                  Each voice downloads once (about 60 MB) the first time it is played.
-                </p>
-                {speedAndSave}
+                <NarratorVoicePicker
+                  sampleText={testText.trim() || undefined}
+                  onVoiceChange={(voice) => saveNow({ aiVoiceId: voice.id })}
+                />
+                <label className="block mt-3">
+                  <span className="block text-xs font-semibold text-ink dark:text-ink-soft-dark mb-1">
+                    Try your own sentence
+                  </span>
+                  <textarea
+                    value={testText}
+                    onChange={(e) => setTestText(e.target.value)}
+                    rows={2}
+                    placeholder="Type a line from your steps — every preview above will say it"
+                    className="w-full px-3 py-2 rounded-xl bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent resize-none"
+                  />
+                </label>
+                {previewVoice && testText.trim() && (
+                  <p className="mt-2 px-3 py-2 rounded-xl bg-paper-2 dark:bg-paper-2-dark text-xs text-ink-soft dark:text-ink-soft-dark">
+                    <span className="font-semibold">{previewVoice.name} reads: </span>
+                    {hindiPreview}
+                  </p>
+                )}
+                <details className="mt-3 group">
+                  <summary className="cursor-pointer text-xs font-semibold text-ink-soft dark:text-ink-faint-dark hover:text-accent">
+                    Pronunciation and Hindi words
+                  </summary>
+                  <label className="mt-2 flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={lookup}
+                      onChange={(e) => saveNow({ hinglishLookup: e.target.checked })}
+                      className="mt-0.5 w-4 h-4 accent-accent"
+                    />
+                    <span className="text-xs text-ink dark:text-ink-soft-dark">
+                      Look up unfamiliar words online
+                      <span className="block text-[11px] text-ink-faint dark:text-ink-faint-dark">
+                        Words the built-in lists don&apos;t know (like “krti”, “kese”) are sent
+                        once, one word at a time, to Google&apos;s transliteration service, and the
+                        answer is saved in this browser. Off: those words are spelled by simple
+                        rules.
+                      </span>
+                    </span>
+                  </label>
+                  <p className="mt-1.5 pl-[26px] text-[11px] text-ink-faint dark:text-ink-faint-dark">
+                    Saved words: {savedWords}
+                    {savedWords > 0 && (
+                      <>
+                        {' · '}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            forgetLearnedWords();
+                            setSavedWords(0);
+                          }}
+                          className="text-accent hover:underline"
+                        >
+                          Clear
+                        </button>
+                      </>
+                    )}
+                  </p>
+                  <PronunciationReview
+                    voiceId={previewVoice?.id ?? AI_VOICES.find((v) => v.lang === 'hi').id}
+                    lookup={lookup}
+                  />
+                </details>
               </>
             ) : (
               /* Browsers that can't run the AI voice: their own voices, as before. */
@@ -380,8 +443,8 @@ export function SettingsDialog({ onClose }) {
             </h3>
             <p className="text-xs text-ink-soft dark:text-ink-faint-dark mt-1 mb-3">
               Paste your own Anthropic API key to let Claude rewrite step descriptions so they sound
-              natural. Your key is only ever sent to Anthropic. Without a key,
-              “Improve” still tidies the text.
+              natural. Your key is only ever sent to Anthropic. Without a key, “Improve” still
+              tidies the text.
             </p>
             <div className="flex gap-2">
               <div className="relative flex-1">

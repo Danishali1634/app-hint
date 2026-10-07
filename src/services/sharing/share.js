@@ -45,11 +45,15 @@
  * truncate very long URLs. Export (ZIP) is the fallback for large courses.
  */
 
+import { normalizePace } from '@/utils/pace';
 import LZString from 'lz-string';
 import { getMediaAsDataUrl } from '@/services/storage/db';
 import { compressImageDataUrl } from '@/utils';
 import { compressVoiceForLink } from '@/services/audio/linkAudio';
 import { getStepAction, getStepImageId } from '@/utils/course';
+import { aiVoiceGender, narrationLanguage } from '@/services/audio/neuralVoice';
+import { typeStepLine } from '@/services/text/demoLines';
+import { matchSpeakerGender } from '@/services/text/speakerGender';
 
 /** @typedef {import('@/types').Course} Course */
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
@@ -142,6 +146,34 @@ async function resolveCourseMedia(course) {
  * @returns {WalkthroughStep[]}
  */
 export function expandTargetDescriptions(steps) {
+  return matchNarrator(expandSteps(steps));
+}
+
+/**
+ * NARRATOR: a 'type' step with no description says what is typed, in the
+ * narrator's language (demoLines.typeStepLine).
+ * NARRATOR GENDER: steps the AI voice reads (no recording) get their
+ * first-person Hindi forms matched to the chosen voice ("main karunga" →
+ * "karungi" for a female voice) — caption and speech alike. A step with a
+ * recorded human voice keeps its text: that is what the person said.
+ * @param {WalkthroughStep[]} steps
+ */
+function matchNarrator(steps) {
+  const gender = aiVoiceGender();
+  const language = narrationLanguage();
+  return steps.map((step) => {
+    if (step.audioData) return step;
+    // A 'type' step with nothing written still says what is typed (never silent).
+    const text =
+      step.action === 'type' && step.region && !step.text?.trim()
+        ? typeStepLine(step.typeValue, language)
+        : step.text;
+    return { ...step, text: gender ? matchSpeakerGender(text, gender) : text };
+  });
+}
+
+/** @param {WalkthroughStep[]} steps */
+function expandSteps(steps) {
   return steps.flatMap((step) => {
     const texts = step.extraTexts || [];
     const targets = step.region ? [step.region, ...(step.extraRegions || [])] : [];
@@ -173,7 +205,7 @@ export async function buildWalkthroughSteps(course, { expandTargets = true } = {
     extraRegions: step.extraRegions || [], // same shape as shared links
     imageData: imageKey ? (images[imageKey] ?? null) : null,
   }));
-  return expandTargets ? expandTargetDescriptions(built) : built;
+  return expandTargets ? expandTargetDescriptions(built) : matchNarrator(built);
 }
 
 /**
@@ -214,6 +246,7 @@ export async function buildShareableCourse(course) {
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
       publishedAt: course.publishedAt,
+      ...(normalizePace(course.pace) !== 1 ? { pace: normalizePace(course.pace) } : {}),
       images: shortImages,
       steps: shortSteps,
     },
@@ -314,7 +347,15 @@ function packShareable(shareable) {
     while (row.length > 7 && (row[row.length - 1] === 0 || row[row.length - 1] === -1)) row.pop();
   }
   const text = LZString.compressToUint8Array(
-    JSON.stringify({ t: c.title, p: c.pageName || '', d: c.description || '', m: media, s: steps }),
+    JSON.stringify({
+      t: c.title,
+      p: c.pageName || '',
+      d: c.description || '',
+      m: media,
+      s: steps,
+      // Pace only when not normal (older links have none = normal).
+      ...(c.pace && c.pace !== 1 ? { k: c.pace } : {}),
+    }),
   );
 
   const total = 4 + text.length + chunks.reduce((sum, b) => sum + b.length, 0);
@@ -370,7 +411,14 @@ function unpackShareable(encoded) {
   });
   return {
     v: 4,
-    c: { title: data.t, pageName: data.p, description: data.d, images, steps },
+    c: {
+      title: data.t,
+      pageName: data.p,
+      description: data.d,
+      pace: normalizePace(data.k),
+      images,
+      steps,
+    },
   };
 }
 

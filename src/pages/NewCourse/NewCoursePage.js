@@ -12,11 +12,14 @@
  *   Page name    (required)         — the app page/module it explains, e.g.
  *                                     "Return Repack". Also searchable.
  *   What are you showing? · Description (optional)
+ *   Narrator voice — who reads the steps aloud (NarratorVoicePicker; saved at
+ *                    once, the same setting as Settings → AI voice)
  *
- * UNIQUE TITLE: checked live (debounced) against IndexedDB and again on
+ * UNIQUE TITLE: checked live against the loaded course list (no API call) and again on
  * submit. If taken, the form shows a link to open the existing course.
  *
- * FLOW: Create → draft Course saved to IndexedDB, then
+ * FLOW: Create (behind the global loading screen, hooks/useLoading) → draft
+ *   Course saved in the browser (IndexedDB), then
  *   screenshots → one empty "Step 1" → #/editor/:id ("Add the screenshot for step 1")
  *   video       → no steps, source 'video' → #/video/:id (record or upload)
  */
@@ -34,14 +37,16 @@ import {
   Video,
 } from 'lucide-react';
 import { findCourseByTitle, saveCourse } from '@/services/storage/db';
-import {CONTEXT_LABELS } from '@/constants';
+import { CONTEXT_LABELS } from '@/constants';
 import { nextId } from '@/utils';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
 import { Tooltip } from '@/components/ui/Tooltip';
+import { useLoading } from '@/hooks/useLoading';
+import { useCourses } from '@/hooks/useCourses';
+import { normalizeTitle } from '@/utils/search';
+import { NarratorVoicePicker } from '@/components/course/NarratorVoicePicker';
 
 /** @typedef {import('@/types').Course} Course */
-
-const TITLE_CHECK_DELAY_MS = 300;
 
 const INPUT_CLASS =
   'w-full px-4 py-3 rounded-xl bg-paper-2 dark:bg-paper-2-dark border text-sm text-ink dark:text-ink-soft-dark outline-none focus:ring-4 transition-all';
@@ -68,7 +73,6 @@ const modeFromQuery = (params) => (params.get('mode') === 'video' ? 'video' : 's
 
 export function NewCoursePage() {
   const navigate = useNavigate();
-  const { notify } = useToast();
   const [searchParams] = useSearchParams();
   const [mode, setMode] = useState(() => modeFromQuery(searchParams));
   const [title, setTitle] = useState('');
@@ -78,7 +82,8 @@ export function NewCoursePage() {
   const [context, setContext] = useState('page_feature');
   const [description, setDescription] = useState('');
   const [showDescription, setShowDescription] = useState(false);
-  const [creating, setCreating] = useState(false);
+  // Global loading state: locks the app while creating, always unlocks after.
+  const { run, isLoading: creating } = useLoading();
   /** Course that already uses the typed title (null = title is free). */
   const [titleClash, setTitleClash] = useState(null);
 
@@ -87,39 +92,42 @@ export function NewCoursePage() {
     setMode(modeFromQuery(searchParams));
   }, [searchParams]);
 
-  // Live unique-title check, debounced so we don't query on every keystroke.
+  // Live unique-title check. Uses the course list the app already loaded
+  // (useCourses), so typing doesn't call the API. Create checks once more.
+  const { courses } = useCourses();
   useEffect(() => {
-    const trimmed = title.trim();
-    if (!trimmed) {
-      setTitleClash(null);
-      return;
-    }
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      const existing = await findCourseByTitle(trimmed);
-      if (!cancelled) setTitleClash(existing || null);
-    }, TITLE_CHECK_DELAY_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [title]);
+    const key = normalizeTitle(title);
+    const existing = key ? courses.find((course) => normalizeTitle(course.title) === key) : null;
+    setTitleClash(existing || null);
+  }, [title, courses]);
 
   const canCreate = title.trim() && pageName.trim() && !titleClash && !creating;
 
   const handleCreate = async () => {
     if (!title.trim() || !pageName.trim()) {
-      notify('Please enter a course title and the page name', 'error');
+      toast.error('Please enter a course title and the page name');
       return;
     }
-    setCreating(true);
-    // Check again: another tab may have created the same title meanwhile.
+    try {
+      const course = await run(createCourse, 'Creating your course…');
+      if (!course) return;
+
+      toast.success('Course created');
+      const nextPage = course.source === 'video' ? `/video/${course.id}` : `/editor/${course.id}`;
+      // state.course: the editor opens this course right away, without loading it again.
+      navigate(nextPage, { replace: true, state: { course } });
+    } catch (error) {
+      toast.error(`Could not create the course: ${error.message}`);
+    }
+  };
+
+  const createCourse = async () => {
     const existing = await findCourseByTitle(title.trim());
     if (existing) {
       setTitleClash(existing);
-      setCreating(false);
-      return;
+      return null;
     }
+
     const fromVideo = mode === 'video';
     /** @type {Course} */
     const course = {
@@ -129,10 +137,9 @@ export function NewCoursePage() {
       context,
       description: description.trim(),
       status: 'draft',
-      baseImageId: null, // legacy field; screenshots now live on each step
+      baseImageId: null,
       source: fromVideo ? 'video' : 'screenshots',
       ...(fromVideo && { sourceVideoId: null }),
-      // Video courses get their steps from the video (#/video/:id).
       steps: fromVideo
         ? []
         : [
@@ -150,11 +157,9 @@ export function NewCoursePage() {
       updatedAt: Date.now(),
       publishedAt: null,
     };
+
     await saveCourse(course);
-    notify('Course created', 'success');
-    // replace: the form is not a page to come back to (Back from the finished
-    // walkthrough should never land in the creation flow again)
-    navigate(fromVideo ? `/video/${course.id}` : `/editor/${course.id}`, { replace: true });
+    return course;
   };
 
   const submitOnEnter = (e) => {
@@ -344,6 +349,8 @@ export function NewCoursePage() {
               <Plus className="w-4 h-4" /> Add a description (optional)
             </button>
           )}
+
+          <NarratorVoicePicker />
 
           <Tooltip
             label={

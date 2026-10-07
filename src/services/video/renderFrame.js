@@ -22,7 +22,14 @@
  * `stage` below is the stage rectangle in canvas pixels.
  */
 
-import { OVERVIEW_VIEW, projectRegion, regionCenter } from '@/utils/camera';
+import { OVERVIEW_VIEW, glideMs, projectRegion, regionCenter } from '@/utils/camera';
+import {
+  easeInOut,
+  focusFrameAt,
+  interpolateView,
+  lerp,
+  matchFocusBoxes,
+} from '@/utils/focusMotion';
 import { captionAwareView, placeCaption } from '@/utils/captionPlacement';
 import { getFocusRegion, getStepTargets, getStepTitles } from '@/utils/course';
 import { partAt, splitCaptionParts } from '@/utils/captionParts';
@@ -50,25 +57,11 @@ const CURSOR_START = { x: 96, y: 112 };
 
 // ─── Easing ──────────────────────────────────────────────────────────────────
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
-/** ≈ CSS cubic-bezier(0.65, 0, 0.35, 1) used by .hs-camera */
-const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 /** ≈ cubic-bezier(0.22, 1, 0.36, 1) used by .hs-cursor */
 const easeOut = (t) => 1 - Math.pow(1 - t, 4);
-const lerp = (a, b, t) => a + (b - a) * t;
-const lerpView = (a, b, t) => ({
-  s: lerp(a.s, b.s, t),
-  tx: lerp(a.tx, b.tx, t),
-  ty: lerp(a.ty, b.ty, t),
-});
 
 /** Portion of a phase an animation occupies, e.g. the 1000ms zoom inside 1100ms "focus". */
 const within = (elapsed, durationMs) => clamp01(elapsed / durationMs);
-const lerpRegion = (a, b, t) => ({
-  x: lerp(a.x, b.x, t),
-  y: lerp(a.y, b.y, t),
-  w: lerp(a.w, b.w, t),
-  h: lerp(a.h, b.h, t),
-});
 
 // ─── Drawing helpers ─────────────────────────────────────────────────────────
 
@@ -552,6 +545,7 @@ export function renderFrame(ctx, frame) {
   const swapping = transitionFor(steps, i) === 'swap';
   const stepStart = frame.segments?.find((s) => s.stepIndex === i)?.start ?? segment.start;
   layer(i, segment.phase, elapsed, {
+    duration: segment.duration,
     enterOrigin: segment.enterOrigin,
     continued: !!segment.continued,
     ...(swapping ? { fadeFrom: images[steps[i - 1].id], fadeElapsed: time - stepStart } : {}),
@@ -659,6 +653,8 @@ function drawOutro(ctx, width, height, t, title, stepCount, geo) {
 /** One step's screen, camera, spotlight, pointer and caption for one phase. */
 function drawStep(ctx, layer) {
   const { width, height, step, prev, stepNumber, image, phase, elapsed, time, geo } = layer;
+  // The camera glide fills 95% of the focus phase, whose length follows the pace.
+  const glide = glideMs(layer.duration ?? WALKTHROUGH_TIMING.focus);
   const showCaption = ['narrate', 'action', 'done'].includes(phase);
   const captionAlpha = phase === 'narrate' ? easeOut(within(elapsed, 450)) : 1;
 
@@ -719,22 +715,31 @@ function drawStep(ctx, layer) {
   const prevView = getFocusRegion(prev)
     ? stepFocusView(ctx, prev, stage, width, height, geo)
     : OVERVIEW_VIEW;
-  const prevSingle = getStepTargets(prev).length === 1;
   let view = OVERVIEW_VIEW;
   let spotlight = 0;
-  let spotRegion = region;
+  // The focus boxes (image %): THE one focus, morphing between steps (utils/focusMotion).
+  let focusBoxes = targets;
   if (region) {
     if (phase === 'focus' && layer.continued) {
-      // Same screen as the step before: glide from its area straight to this one.
-      const e = easeInOut(within(elapsed, 1000));
-      view = lerpView(prevView, focusView, e);
+      // Same screen as the step before: the SAME focus morphs straight from the
+      // previous target to this one while the camera moves, on one eased clock
+      // (exactly like the player's FocusCamera) — never faded, never rebuilt.
+      const e = easeInOut(within(elapsed, glide));
+      const prevTargets = getStepTargets(prev);
+      const frame = focusFrameAt(
+        { view: prevView, boxes: prevTargets },
+        { view: focusView, boxes: targets },
+        e,
+        matchFocusBoxes(prevTargets, targets),
+      );
+      view = frame.view;
+      focusBoxes = frame.boxes;
       spotlight = prev?.region ? 1 : within(elapsed, 600);
-      // One target → one target: the hole glides; otherwise the holes move with the camera.
-      spotRegion = prevSingle && targets.length === 1 ? lerpRegion(prev.region, region, e) : region;
     } else if (phase === 'focus') {
-      const e = easeInOut(within(elapsed, 1000));
-      view = lerpView(OVERVIEW_VIEW, focusView, e);
-      spotlight = within(elapsed, 600);
+      const e = easeInOut(within(elapsed, glide));
+      view = interpolateView(OVERVIEW_VIEW, focusView, e);
+      // The dim follows the camera softly (as the player: 900 ms after 200 ms).
+      spotlight = easeInOut(within(elapsed - 200, 900));
     } else if (
       ['point', 'narrate', 'action', 'done'].includes(phase) ||
       (phase === 'exit' && isClick)
@@ -743,7 +748,7 @@ function drawStep(ctx, layer) {
       spotlight = 1;
     } else if (phase === 'exit') {
       const e = easeInOut(within(elapsed, 1000));
-      view = lerpView(focusView, OVERVIEW_VIEW, e);
+      view = interpolateView(focusView, OVERVIEW_VIEW, e);
       spotlight = 1 - within(elapsed, 600);
     }
   }
@@ -818,10 +823,8 @@ function drawStep(ctx, layer) {
   }
 
   if (region && spotlight > 0) {
-    // One hole per target (a single target keeps its gliding spotRegion).
-    const holes = (targets.length === 1 ? [spotRegion] : targets).map((t) =>
-      toPixels(stage, projectRegion(t, view), SPOTLIGHT_PADDING),
-    );
+    // One hole per focus box (box 0 is THE focus; extra boxes grow out of / into it).
+    const holes = focusBoxes.map((t) => toPixels(stage, projectRegion(t, view), SPOTLIGHT_PADDING));
 
     // Dim everything except the targets (even-odd fill = rectangle with holes).
     ctx.save();
@@ -832,14 +835,30 @@ function drawStep(ctx, layer) {
     ctx.fillStyle = COLORS.dim;
     ctx.fill('evenodd');
 
-    // Rings: pulsing glow while explaining, flash on the target being clicked.
+    // Rings: settle in like a lens on a new screen, receive the focus when the
+    // focus arrives (a calm glow, no bounce), then pulse; flash when clicked.
     const pulse = 0.5 + 0.5 * Math.sin((time / 1600) * Math.PI * 2);
+    let ringScale = 1;
+    let ringAlpha = 1;
+    let glow = 0;
+    if (phase === 'focus' && !layer.continued) {
+      const q = easeOut(within(elapsed - glide * 0.3, glide * 0.7));
+      ringScale = lerp(1.12, 1, q);
+      ringAlpha = q;
+    } else if (phase === (isClick ? 'point' : 'narrate') && elapsed < 650) {
+      glow = Math.sin(Math.PI * (elapsed / 650));
+    }
+    ctx.globalAlpha = stageAlpha * spotlight * ringAlpha;
     ctx.shadowColor = 'rgba(21, 112, 239, 0.65)';
-    ctx.shadowBlur = 14 + 14 * pulse;
+    ctx.shadowBlur = 14 + 14 * pulse + 26 * glow;
     ctx.lineWidth = 3;
     ctx.strokeStyle = COLORS.accent;
     for (const hole of holes) {
-      roundRectPath(ctx, hole.x, hole.y, hole.w, hole.h, 12);
+      const cx = hole.x + hole.w / 2;
+      const cy = hole.y + hole.h / 2;
+      const w = hole.w * ringScale;
+      const h = hole.h * ringScale;
+      roundRectPath(ctx, cx - w / 2, cy - h / 2, w, h, 12);
       ctx.stroke();
     }
     const hole = holes[Math.min(clickIndex, holes.length - 1)];

@@ -709,7 +709,7 @@ function CaptionBubble({ box, number, text, onClick }) {
             : 'italic text-ink-faint dark:text-ink-faint-dark'
         }`}
       >
-        {text?.trim() || 'Write what to do in the panel →'}
+        {text?.trim() || 'Click here to write what to say'}
       </span>
     </button>
   );

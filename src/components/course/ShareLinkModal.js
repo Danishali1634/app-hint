@@ -4,7 +4,7 @@
  * The URL itself is built by services/sharing/share.js.
  */
 
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
 
 /**
  * @param {{
@@ -17,10 +17,8 @@ import { useToast } from '@/hooks/useToast';
  * }} props
  */
 export function ShareLinkModal({ url, title, description, note, copiedMessage, onClose }) {
-  const { notify } = useToast();
-
   const copy = () => {
-    navigator.clipboard.writeText(url).then(() => notify(copiedMessage, 'success'));
+    navigator.clipboard.writeText(url).then(() => toast.success(copiedMessage));
   };
 
   return (

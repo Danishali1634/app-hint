@@ -38,7 +38,7 @@ import { putMedia, deleteMedia, getMedia, getMediaAsDataUrl } from '@/services/s
 import { transcribeRecording } from '@/services/audio/transcribe';
 import { compressVoiceFile } from '@/services/audio/recorder';
 import { nextId } from '@/utils';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
 
 /** @typedef {import('@/types').Step} Step */
 
@@ -64,7 +64,6 @@ export function AudioRecorderPanel({
   onTranscribed,
 }) {
   const { supported, state, duration, error, start, stop, cancel, reset } = useAudioRecorder();
-  const { notify } = useToast();
 
   const [previewUrl, setPreviewUrl] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -107,14 +106,17 @@ export function AudioRecorderPanel({
   const handleStop = async () => {
     const blob = await stop();
     if (!blob || blob.size === 0) {
-      notify('Recording was empty, try again.', 'error');
+      toast.error('Recording was empty, try again.');
       return;
     }
-    const mediaId = nextId('media');
-    await putMedia(mediaId, blob);
-    if (manageMedia && step.audioId) await deleteMedia(step.audioId); // replace old take
-    onSave(mediaId);
-    notify('Recording saved', 'success');
+    try {
+      const mediaId = nextId('media');
+      await putMedia(mediaId, blob);
+      if (manageMedia && step.audioId) await deleteMedia(step.audioId); // replace old take
+      onSave(mediaId);
+    } catch (error) {
+      toast.error(`Could not save the recording: ${error.message}`);
+    }
   };
 
   // "Convert to text": the recording becomes the description, the AI voice reads it.
@@ -129,15 +131,15 @@ export function AudioRecorderPanel({
         setConverting((c) => (c ? { download } : c)),
       );
       if (!text) {
-        notify('No speech found in this recording', 'error');
+        toast.error('No speech found in this recording');
         return;
       }
       if (manageMedia) await deleteMedia(step.audioId);
       audioRef.current?.pause();
       onTranscribed(text);
-      notify('Converted to text — the AI voice will read it now', 'success');
+      toast.success('Converted to text — the AI voice will read it now');
     } catch {
-      notify('Could not convert this recording. Check your internet and try again.', 'error');
+      toast.error('Could not convert this recording. Check your internet and try again.');
     } finally {
       setConverting(null);
     }
@@ -153,7 +155,7 @@ export function AudioRecorderPanel({
       const file = input.files?.[0];
       if (!file) return;
       if (!file.type.startsWith('audio/') && !/\.(mp3|m4a|wav|ogg|webm|aac)$/i.test(file.name)) {
-        notify('Please choose an audio file (MP3, M4A, WAV, …)', 'error');
+        toast.error('Please choose an audio file (MP3, M4A, WAV, …)');
         return;
       }
       setUploading(0);
@@ -163,9 +165,8 @@ export function AudioRecorderPanel({
         await putMedia(mediaId, blob);
         if (manageMedia && step.audioId) await deleteMedia(step.audioId); // replace old take
         onSave(mediaId);
-        notify('Voice added', 'success');
       } catch (err) {
-        notify(err instanceof Error ? err.message : 'Could not add this audio file', 'error');
+        toast.error(err instanceof Error ? err.message : 'Could not add this audio file');
       } finally {
         setUploading(null);
       }
@@ -178,7 +179,6 @@ export function AudioRecorderPanel({
     onDelete();
     setHasAudio(false);
     setPreviewUrl(null);
-    notify('Recording deleted');
   };
 
   const togglePlay = () => {

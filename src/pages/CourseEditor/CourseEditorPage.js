@@ -19,6 +19,7 @@
  *                 reorder, scrolls on its own)
  *   Main column : active Global Step →
  *                   no screenshot yet → StepScreenshotUpload (upload / drop / paste / reuse)
+ *                                       + on screen 1: NarratorVoicePicker (compact)
  *                   has screenshot    → GlobalStepEditor (context bar that says what to
  *                                       do next, TargetCanvas, sub-step cards)
  *                 no steps → "Create Global Step 1"
@@ -37,11 +38,9 @@
  *   updateStep below.
  *
  * AUTOSAVE
- *   There is no Save button. Every change calls saveCourse() immediately
- *   (IndexedDB writes are cheap), so a refresh never loses work.
- *   saveCourse runs inside the state updater so it always saves the newest
- *   state, even during fast typing. In dev StrictMode the updater runs twice,
- *   so the same data is written twice. That is harmless because put() is idempotent.
+ *   updateCourse / updateStep only change the state. One effect saves the course
+ *   (IndexedDB) AUTOSAVE_DELAY_MS after the last change (so not on every key
+ *   press), and right away when you leave the editor.
  *
  * MARK DONE: the sticky bar at the bottom shows how many steps are ready
  * (screenshot + area). "Mark done" checks every step, sets status 'published'
@@ -67,7 +66,7 @@
  */
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
   Eye,
@@ -87,6 +86,8 @@ import {
   ImagePlus,
   Video,
   Compass,
+  Mic2,
+  SpellCheck,
 } from 'lucide-react';
 import {
   getCourse,
@@ -98,6 +99,19 @@ import {
   findCourseByTitle,
 } from '@/services/storage/db';
 import { transcribeRecording } from '@/services/audio/transcribe';
+import {
+  AI_VOICES,
+  aiVoiceFromSettings,
+  isAiVoiceSupported,
+  narrationLanguage,
+} from '@/services/audio/neuralVoice';
+import { PaceDemo } from '@/components/ui/PaceDemo';
+import { NARRATION_LANGUAGES } from '@/services/text/demoLines';
+import { convertStepsLanguage } from '@/services/text/courseLanguage';
+import { textLanguageOf } from '@/services/text/hinglish';
+import { setVoiceSettings } from '@/services/storage/settings';
+import { PACE, normalizePace, paceLabel } from '@/utils/pace';
+import { fixStepsSpelling } from '@/services/text/fixText';
 import { exportCourseZip } from '@/services/export/zip';
 import { STATUS_LABELS, STATUS_COLORS, MAX_STEPS } from '@/constants';
 import { nextId } from '@/utils';
@@ -116,11 +130,14 @@ import { GlobalStepEditor } from '@/components/course/GlobalStepEditor';
 import { ScreenGallery } from '@/components/course/ScreenGallery';
 import { useMediaUrls } from '@/hooks/useMediaUrls';
 import { StepScreenshotUpload } from '@/components/course/StepScreenshotUpload';
+import { NarratorVoicePicker } from '@/components/course/NarratorVoicePicker';
 import { PreviewStudio } from '@/components/course/PreviewStudio';
 import { CourseDoneDialog } from '@/components/course/CourseDoneDialog';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { PageSpinner, Spinner } from '@/components/ui/Spinner';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
+import { UndoToast } from '@/components/ui/Toast';
+import { removeCursorFromArea } from '@/services/image/removeCursor';
 import { useCourseSharing } from '@/hooks/useCourseSharing';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { TutorialDialog } from '@/components/tutorial/TutorialDialog';
@@ -133,6 +150,8 @@ import { NextStepCoach } from '@/components/tutorial/NextStepCoach';
 /** @typedef {import('@/types').Step} Step */
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
+/** Autosave this long after the last change (ms). */
+const AUTOSAVE_DELAY_MS = 1000;
 /** Step list width, px (resizable; remembered per browser). */
 const RAIL_DEFAULT = 280;
 const RAIL_WIDTH_KEY = 'hs-editor-rail-width';
@@ -188,7 +207,9 @@ function createStep(stepNumber) {
 export function CourseEditorPage() {
   const { courseId } = useParams();
   const navigate = useNavigate();
-  const { notify } = useToast();
+  const location = useLocation();
+  // The course NewCoursePage just created (read once; see loadCourse).
+  const [justCreated] = useState(location.state?.course);
 
   // ── State ────────────────────────────────────────────────────────────────
   const [course, setCourse] = useState(null);
@@ -262,32 +283,44 @@ export function CourseEditorPage() {
   // ── Load course ──────────────────────────────────────────────────────────
   const loadCourse = useCallback(async () => {
     if (!courseId) return;
-    const loaded = await getCourse(courseId);
-    if (!loaded) {
-      notify('Course not found', 'error');
+    let loaded;
+    try {
+      if (justCreated?.id === courseId) {
+        // Just created → use it directly, no need to load it again.
+        loaded = justCreated;
+        navigate(location.pathname, { replace: true }); // forget it, so a page refresh loads the saved version
+      } else {
+        loaded = await getCourse(courseId);
+      }
+    } catch (error) {
+      toast.error(`Could not open the course: ${error.message}`);
       navigate('/');
       return;
     }
-    // Repair sub-step groups (e.g. after edits in the preview studio) and
-    // bring automatic labels up to date ("Step 3 · Area 2" → "Step 3.2").
+    if (!loaded) {
+      toast.error('Course not found');
+      navigate('/');
+      return;
+    }
+
     const repaired = renumberDefaultLabels(normalizeStepGroups(loaded, () => nextId('group')));
     if (JSON.stringify(repaired) !== JSON.stringify(loaded.steps)) {
       loaded.steps = repaired;
       saveCourse(loaded);
     }
+    savedAtRef.current = loaded.updatedAt; // already saved → autosave has nothing to do
     setCourse(loaded);
     if (loaded.steps.length > 0) setActiveStepId(loaded.steps[0].id);
     setLoading(false);
-  }, [courseId, navigate, notify]);
+  }, [courseId, navigate, justCreated, location.pathname]);
 
   useEffect(() => {
     loadCourse();
   }, [loadCourse]);
 
-  // Resolve the active step's screenshot Blob → data URL whenever it changes.
   useEffect(() => {
-    let mounted = true; // ignore results that arrive after a step change/unmount
-    setImageUrl(null); // don't show the previous step's image while loading
+    let mounted = true;
+    setImageUrl(null);
     if (activeImageId) {
       getMediaAsDataUrl(activeImageId).then((url) => {
         if (mounted) setImageUrl(url);
@@ -298,40 +331,52 @@ export function CourseEditorPage() {
     };
   }, [activeImageId]);
 
-  // ── Course mutations (all autosave) ──────────────────────────────────────
+  // ── Autosave ─────────────────────────────────────────────────────────────
+  // Every change sets course.updatedAt. We save 1 second AFTER the last change,
+  // so typing a word is one save, not one save per letter.
+  const savedAtRef = useRef(null); // updatedAt of the version that is already saved
+  const courseRef = useRef(course); // the latest course (used when leaving the page)
+  courseRef.current = course;
 
-  /** Merge a patch into the course, bump updatedAt, persist. */
+  useEffect(() => {
+    if (!course || course.updatedAt === savedAtRef.current) return; // nothing new to save
+    const timer = setTimeout(() => {
+      savedAtRef.current = course.updatedAt;
+      saveCourse(course);
+    }, AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(timer); // another change came → wait again
+  }, [course]);
+
+  // Leaving the editor before the 1 second is over → save right away.
+  useEffect(() => {
+    return () => {
+      const latest = courseRef.current;
+      if (latest && latest.updatedAt !== savedAtRef.current) saveCourse(latest);
+    };
+  }, []);
+
   const updateCourse = useCallback((patch) => {
     setCourse((prev) => {
       if (!prev) return prev;
-      const updated = { ...prev, ...patch, updatedAt: Date.now() };
-      saveCourse(updated);
-      return updated;
+      return { ...prev, ...patch, updatedAt: Date.now() };
     });
   }, []);
 
-  /** Merge a patch into one step, bump updatedAt, persist. */
   const updateStep = useCallback((stepId, patch) => {
     setCourse((prev) => {
       if (!prev) return prev;
-      const updated = {
+      return {
         ...prev,
         steps: prev.steps.map((s) => (s.id === stepId ? { ...s, ...patch } : s)),
         updatedAt: Date.now(),
       };
-      saveCourse(updated);
-      return updated;
     });
   }, []);
 
-  /**
-   * Deletes a screenshot Blob unless another step (other than `exceptStepIds`,
-   * one id or a list), the legacy course image or the gallery still uses it.
-   */
   const releaseImage = useCallback(
     (imageId, exceptStepIds) => {
       if (!course || !imageId || imageId === course.baseImageId) return;
-      if (course.gallery?.includes(imageId)) return; // kept for reuse until removed there
+      if (course.gallery?.includes(imageId)) return;
       const except = new Set([].concat(exceptStepIds));
       const stillUsed = course.steps.some((s) => !except.has(s.id) && s.imageId === imageId);
       if (!stillUsed) deleteMedia(imageId);
@@ -341,10 +386,6 @@ export function CourseEditorPage() {
 
   const selectStep = (stepId) => setActiveStepId(stepId);
 
-  /**
-   * Inserts a new Global Step (empty, no screenshot yet) at position `index`
-   * of the step list and selects it. `index = steps.length` appends.
-   */
   const insertStep = useCallback(
     (index) => {
       if (!course || course.steps.length >= MAX_STEPS) return;
@@ -386,6 +427,173 @@ export function CourseEditorPage() {
       }
     },
     [course, updateCourse, activeStepId, releaseImage],
+  );
+
+  // ── Narrator voice (header "Voice" button) ──
+  // Switching between an English and a Hindi voice changes the steps' language
+  // to match (services/text/courseLanguage), with Undo. Only steps nobody edited
+  // while the translation ran are changed.
+  const [voicePanelOpen, setVoicePanelOpen] = useState(false);
+  const [narratorId, setNarratorId] = useState(() => aiVoiceFromSettings().voiceId);
+  const [narrationLang, setNarrationLang] = useState(() => narrationLanguage());
+  const narrator = AI_VOICES.find((v) => v.id === narratorId) ?? AI_VOICES[0];
+
+  /**
+   * Puts `patched` steps (id → step) in place of the ones in `before` (id → step),
+   * skipping any step edited since. Returns an undo that puts them back.
+   */
+  const applyStepPatches = useCallback((before, patched) => {
+    setCourse((prev) =>
+      prev
+        ? {
+            ...prev,
+            steps: prev.steps.map((s) => {
+              const next = patched.get(s.id);
+              return next && s === before.get(s.id) ? next : s;
+            }),
+            updatedAt: Date.now(),
+          }
+        : prev,
+    );
+    return () =>
+      setCourse((prev) =>
+        prev
+          ? {
+              ...prev,
+              steps: prev.steps.map((s) => (s === patched.get(s.id) ? before.get(s.id) : s)),
+              updatedAt: Date.now(),
+            }
+          : prev,
+      );
+  }, []);
+
+  // ── "Fix spelling" (header): every step and sub-step at once, with Undo ──
+  const [fixingAll, setFixingAll] = useState(false);
+  const fixAllSpelling = useCallback(async () => {
+    if (!course || fixingAll) return;
+    setFixingAll(true);
+    const before = new Map(course.steps.map((s) => [s.id, s]));
+    try {
+      const { patched, changes } = await fixStepsSpelling(course.steps);
+      if (!patched.size) {
+        toast('No spelling mistakes found in your steps');
+        return;
+      }
+      const undo = applyStepPatches(before, patched);
+      const distinct = [...new Set(changes.map((c) => `${c.from} → ${c.to}`))];
+      const shown = distinct.slice(0, 3).join(', ') + (distinct.length > 3 ? ' …' : '');
+      const words = changes.length;
+      const steps = patched.size;
+      toast.success(
+        ({ closeToast }) => (
+          <UndoToast
+            message={`Fixed ${words} word${words === 1 ? '' : 's'} in ${steps} step${steps === 1 ? '' : 's'}: ${shown}`}
+            onUndo={undo}
+            closeToast={closeToast}
+          />
+        ),
+        { autoClose: 10000 },
+      );
+    } catch (error) {
+      toast.error(`Couldn't fix the spelling: ${error.message}`);
+    } finally {
+      setFixingAll(false);
+    }
+  }, [course, fixingAll, applyStepPatches]);
+
+  // ── Course language (header English | Hinglish switch, and voice changes) ──
+  const [languageBusy, setLanguageBusy] = useState(false);
+  /** The language most step texts are written in: 'en' | 'hinglish' | 'hindi'. */
+  const courseLanguage = useMemo(() => {
+    const texts = (course?.steps || []).filter((st) => !st.audioId && st.text?.trim());
+    const count = { en: 0, hinglish: 0, hindi: 0 };
+    for (const st of texts) {
+      if (/[\u0900-\u097F]/.test(st.text)) count.hindi += 1;
+      else count[textLanguageOf(st.text) === 'hi' ? 'hinglish' : 'en'] += 1;
+    }
+    return Object.entries(count).sort((a, b) => b[1] - a[1])[0][0];
+  }, [course?.steps]);
+
+  /** Every step into `to` ('en' | 'hinglish' | 'hindi'), with an Undo toast; `note` ends the message. */
+  const changeCourseLanguage = useCallback(
+    async (to, note = '') => {
+      if (!course) return;
+      const before = new Map(course.steps.map((s) => [s.id, s]));
+      const languageName = NARRATION_LANGUAGES.find((l) => l.id === to)?.label ?? to;
+      const toastId = toast.loading(`Changing your steps to ${languageName}…`);
+      setLanguageBusy(true);
+      try {
+        const { patched } = await convertStepsLanguage(course.steps, to);
+        if (!patched.size) {
+          toast.update(toastId, {
+            render: `Your steps are already in ${languageName}${note}`,
+            type: 'info',
+            isLoading: false,
+            autoClose: 3000,
+          });
+          return;
+        }
+        const undo = applyStepPatches(before, patched);
+        const count = patched.size;
+        toast.update(toastId, {
+          render: ({ closeToast }) => (
+            <UndoToast
+              message={`${count} step${count === 1 ? '' : 's'} changed to ${languageName}${note}`}
+              onUndo={undo}
+              closeToast={closeToast}
+            />
+          ),
+          type: 'success',
+          isLoading: false,
+          autoClose: 8000,
+          closeButton: true,
+        });
+      } catch (error) {
+        toast.update(toastId, {
+          render: `Couldn't change the steps to ${languageName}: ${error.message}`,
+          type: 'error',
+          isLoading: false,
+          autoClose: 6000,
+        });
+      } finally {
+        setLanguageBusy(false);
+      }
+    },
+    [course, applyStepPatches],
+  );
+
+  /** Narrator panel: a new language converts the steps (the panel already picked a voice). */
+  const onNarratorLanguage = useCallback(
+    (language) => {
+      const voice = AI_VOICES.find((v) => v.id === aiVoiceFromSettings().voiceId);
+      setNarratorId(voice.id);
+      setNarrationLang(language);
+      changeCourseLanguage(language, ` for ${voice.name}`);
+    },
+    [changeCourseLanguage],
+  );
+
+  /**
+   * Header switch: the whole course in one language — every step converted, and
+   * a narrator who speaks it (same gender) if the current one doesn't.
+   */
+  const setCourseLanguage = useCallback(
+    (to) => {
+      setVoiceSettings({ language: to });
+      setNarrationLang(to);
+      const wantsHindi = to !== 'en';
+      if ((narrator.lang === 'hi') === wantsHindi) {
+        changeCourseLanguage(to);
+        return;
+      }
+      const speaks = (v) => (v.lang === 'hi') === wantsHindi;
+      const voice =
+        AI_VOICES.find((v) => speaks(v) && v.gender === narrator.gender) ?? AI_VOICES.find(speaks);
+      setVoiceSettings({ aiVoiceId: voice.id });
+      setNarratorId(voice.id);
+      changeCourseLanguage(to, ` · narrator: ${voice.name}`);
+    },
+    [narrator, changeCourseLanguage],
   );
 
   // Always the latest deleteSteps (an "Undo" pressed seconds later must not work
@@ -480,9 +688,7 @@ export function CourseEditorPage() {
       if (!prev) return prev;
       const gallery = [...(prev.gallery || [])];
       for (const id of ids) if (id && !gallery.includes(id)) gallery.push(id);
-      const updated = { ...prev, gallery, updatedAt: Date.now() };
-      saveCourse(updated);
-      return updated;
+      return { ...prev, gallery, updatedAt: Date.now() };
     });
   }, []);
 
@@ -492,21 +698,25 @@ export function CourseEditorPage() {
       const ids = [];
       for (const file of files) {
         if (!file.type.startsWith('image/')) {
-          notify('Please choose an image file (PNG, JPG, ...)', 'error');
+          toast.error('Please choose an image file (PNG, JPG, ...)');
           continue;
         }
         if (file.size > MAX_IMAGE_BYTES) {
-          notify(`${file.name || 'Image'} is over 10MB — skipped`, 'error');
+          toast.error(`${file.name || 'Image'} is over 10MB — skipped`);
           continue;
         }
-        const mediaId = nextId('media');
-        await putMedia(mediaId, file);
-        ids.push(mediaId);
+        try {
+          const mediaId = nextId('media');
+          await putMedia(mediaId, file);
+          ids.push(mediaId);
+        } catch (error) {
+          toast.error(`Could not upload ${file.name || 'the screenshot'}: ${error.message}`);
+        }
       }
       addToGallery(ids);
       return ids;
     },
-    [notify, addToGallery],
+    [addToGallery],
   );
 
   /**
@@ -526,15 +736,13 @@ export function CourseEditorPage() {
       const oldImageIds = new Set(affected.map((s) => s.imageId).filter(Boolean));
       setCourse((prev) => {
         if (!prev) return prev;
-        const updated = {
+        return {
           ...prev,
           steps: prev.steps.map((s) =>
             ids.has(s.id) ? { ...s, imageId: newImageId, ...withTargets([]) } : s,
           ),
           updatedAt: Date.now(),
         };
-        saveCourse(updated);
-        return updated;
       });
       for (const oldId of oldImageIds) if (oldId !== newImageId) releaseImage(oldId, [...ids]);
       if (!ids.has(activeStepId)) setActiveStepId(affected[0].id);
@@ -550,7 +758,7 @@ export function CourseEditorPage() {
     (imageIds) => {
       if (!activeUnit || !imageIds.length) return;
       if (course.steps.length + imageIds.length > MAX_STEPS) {
-        notify(`A course can have up to ${MAX_STEPS} steps`, 'error');
+        toast.error(`A course can have up to ${MAX_STEPS} steps`);
         return;
       }
       const groupId = activeUnit.groupId || nextId('group');
@@ -562,7 +770,7 @@ export function CourseEditorPage() {
       updateCourse({ steps: renumberDefaultLabels(steps) });
       setActiveStepId(created[0].id);
     },
-    [activeUnit, course, updateCourse, notify],
+    [activeUnit, course, updateCourse],
   );
 
   /**
@@ -574,22 +782,13 @@ export function CourseEditorPage() {
       if (!activeStep) return;
       const [first, ...rest] = await storeImageFiles(files);
       if (!first) return;
-      const hadImage = !!activeImageId;
       setUnitImage(first);
       if (rest.length) {
         // setUnitImage and this both update the course; run after it has applied.
         setTimeout(() => addSubStepsWithScreensRef.current(rest), 0);
       }
-      notify(
-        rest.length
-          ? `${rest.length + 1} screenshots added, one step each. Now drag a box on each.`
-          : hadImage
-            ? 'Screenshot replaced. Drag the boxes again; your text is kept.'
-            : 'Screenshot added. Now drag a box over what to click.',
-        'success',
-      );
     },
-    [activeStep, activeImageId, storeImageFiles, setUnitImage, notify],
+    [activeStep, storeImageFiles, setUnitImage],
   );
   // Latest version for the deferred call above (the course has changed by then).
   const addSubStepsWithScreensRef = useRef(addSubStepsWithScreens);
@@ -604,7 +803,6 @@ export function CourseEditorPage() {
       const [id] = input.files?.[0] ? await storeImageFiles([input.files[0]]) : [];
       if (!id) return;
       setUnitImage(id);
-      notify('Screenshot replaced. Drag the boxes again; your text is kept.', 'success');
     };
     input.click();
   };
@@ -614,12 +812,6 @@ export function CourseEditorPage() {
     const ids = await storeImageFiles(files);
     if (!ids.length) return;
     addSubStepsWithScreens(ids);
-    notify(
-      ids.length > 1
-        ? `${ids.length} screenshots added, one new step each`
-        : 'Screenshot added as a new step. Drag a box on it.',
-      'success',
-    );
   };
 
   /** Shows a screen (from this Global Step or the gallery) for the selected sub-step. */
@@ -674,10 +866,57 @@ export function CourseEditorPage() {
    * the selected sub-step's screen, selected so the next box drawn becomes its target.
    */
   /** New feature on the active screen (and its screenshot); `region` = its first box. */
+  // ── Mouse pointer in the screenshot ──────────────────────────────────────
+
+  /** Uses screenshot `toId` everywhere the course used `fromId` (boxes and text stay). */
+  const swapImage = (fromId, toId) => {
+    const swap = (id) => (id === fromId ? toId : id);
+    setCourse((prev) => ({
+      ...prev,
+      baseImageId: swap(prev.baseImageId),
+      gallery: prev.gallery?.map(swap),
+      steps: prev.steps.map((s) => ({ ...s, imageId: swap(s.imageId) })),
+      updatedAt: Date.now(),
+    }));
+  };
+
+  /**
+   * After a box is drawn: if the screenshot shows a mouse pointer inside it,
+   * remove the pointer (the walkthrough draws its own). Can be undone.
+   */
+  const removePointerInBox = async (region) => {
+    const imageId = activeImageId;
+    const original = imageId && (await getMedia(imageId));
+    if (!original) return;
+
+    const cleaned = await removeCursorFromArea(original, region);
+    if (!cleaned) return; // no pointer in the box → nothing to do
+
+    const cleanId = nextId('media');
+    await putMedia(cleanId, cleaned);
+    swapImage(imageId, cleanId);
+
+    // When the message closes, delete the picture that is no longer used.
+    let undone = false;
+    toast.info(
+      ({ closeToast }) => (
+        <UndoToast
+          message="Mouse pointer removed from the screenshot"
+          closeToast={closeToast}
+          onUndo={() => {
+            undone = true;
+            swapImage(cleanId, imageId);
+          }}
+        />
+      ),
+      { onClose: () => deleteMedia(undone ? cleanId : imageId).catch(() => {}) },
+    );
+  };
+
   const addSubStep = (region = null) => {
     if (!activeUnit || !activeImageId) return;
     if (course.steps.length >= MAX_STEPS) {
-      notify(`A course can have up to ${MAX_STEPS} steps`, 'error');
+      toast.error(`A course can have up to ${MAX_STEPS} steps`);
       return;
     }
     const groupId = activeUnit.groupId || nextId('group');
@@ -693,13 +932,6 @@ export function CourseEditorPage() {
     steps.splice(activeUnit.end + 1, 0, newStep);
     updateCourse({ steps: renumberDefaultLabels(steps) });
     setActiveStepId(newStep.id);
-    // Drawing a box is all it takes to add a feature, so a stray drag can add one
-    // by accident: offer a one-click way back.
-    if (region) {
-      notify(`Feature ${activeUnit.end - activeUnit.start + 2} added`, 'info', {
-        action: { label: 'Undo', onClick: () => deleteStepsRef.current([newStep.id]) },
-      });
-    }
   };
 
   /** Delete a sub-step from the editor: right away when it is still empty, else ask. */
@@ -718,7 +950,6 @@ export function CourseEditorPage() {
         course.steps.map((s) => (ids.has(s.id) ? { ...s, groupId: null } : s)),
       ),
     });
-    notify('Each step is now its own screen', 'success');
   };
 
   // ── Actions ──────────────────────────────────────────────────────────────
@@ -730,18 +961,17 @@ export function CourseEditorPage() {
   const markDone = () => {
     if (!course) return;
     if (course.steps.length === 0) {
-      notify('Create Screen 1 first', 'error');
+      toast.error('Create Screen 1 first');
       return;
     }
     const missingIndex = course.steps.findIndex((s) => !isStepReady(s));
     if (missingIndex >= 0) {
       const step = course.steps[missingIndex];
       const name = featureName(stepNumbers[missingIndex]);
-      notify(
+      toast.error(
         getStepImageId(course, step)
           ? `${name}: drag a box over what to click first`
           : `${name} needs a screenshot`,
-        'error',
       );
       selectStep(step.id);
       return;
@@ -770,7 +1000,7 @@ export function CourseEditorPage() {
     }
     const clash = await findCourseByTitle(next, course.id);
     if (clash) {
-      notify(`“${next}” is already used by another course — title not changed`, 'error');
+      toast.error(`“${next}” is already used by another course — title not changed`);
       updateCourse({ title: previous });
       return;
     }
@@ -800,13 +1030,13 @@ export function CourseEditorPage() {
       setConvertingAll({ done: n + 1, total: withVoice.length });
     }
     setConvertingAll(null);
-    if (failed)
-      notify(`${failed} recording${failed > 1 ? 's' : ''} could not be converted`, 'error');
-    else notify('All voices converted to text — the AI voice reads them now', 'success');
+    if (failed) toast.error(`${failed} recording${failed > 1 ? 's' : ''} could not be converted`);
+    else toast.success('All voices converted to text — the AI voice reads them now');
   };
 
   /** "Save": the course is done for now → close the editor, open its watch page. */
   const saveAndWatch = async () => {
+    savedAtRef.current = course.updatedAt;
     await saveCourse(course);
     storeValue(previewedKey, 1); // the coach's last milestone ("Save it") is done
     navigate(`/preview/${course.id}?saved=1`, { replace: true });
@@ -816,9 +1046,9 @@ export function CourseEditorPage() {
     if (!course) return;
     try {
       await exportCourseZip(course);
-      notify('Backup ZIP downloaded', 'success');
+      toast.success('Backup ZIP downloaded');
     } catch {
-      notify('Export failed', 'error');
+      toast.error('Export failed');
     }
   };
 
@@ -946,6 +1176,91 @@ export function CourseEditorPage() {
         </div>
 
         <div className="flex items-center gap-2 ml-auto">
+          {isAiVoiceSupported() && (
+            <div className="relative">
+              <Tooltip label="Narrator voice, voice speed and walkthrough pace" side="bottom">
+                <button
+                  onClick={() => setVoicePanelOpen((o) => !o)}
+                  className={OUTLINE_BUTTON_CLASS}
+                  aria-expanded={voicePanelOpen}
+                >
+                  <Mic2 className="w-4 h-4" />
+                  <span className="hidden sm:inline">
+                    {narrator.name}
+                    {normalizePace(course.pace) !== 1 && ` · ${paceLabel(course.pace)}`}
+                  </span>
+                </button>
+              </Tooltip>
+              {voicePanelOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-30"
+                    onClick={() => setVoicePanelOpen(false)}
+                    aria-hidden="true"
+                  />
+                  <div className="absolute right-0 top-full mt-2 z-40 w-[min(28rem,calc(100vw-2rem))] max-h-[75vh] overflow-y-auto rounded-2xl shadow-xl space-y-2 bg-paper dark:bg-paper-dark">
+                    <PaceControl
+                      pace={normalizePace(course.pace)}
+                      language={narrationLang}
+                      onChange={(pace) => updateCourse({ pace: pace === 1 ? undefined : pace })}
+                    />
+                    <NarratorVoicePicker
+                      onVoiceChange={(voice) => setNarratorId(voice.id)}
+                      onLanguageChange={onNarratorLanguage}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {course.steps.some((st) => st.text?.trim()) && (
+            <div
+              className="flex items-center h-9 p-0.5 rounded-lg border border-line dark:border-line-dark"
+              role="radiogroup"
+              aria-label="Course language"
+            >
+              {NARRATION_LANGUAGES.map(({ id: lang, label: name }) => (
+                <Tooltip
+                  key={lang}
+                  label={`Every step in ${name}${lang === 'en' ? ' (English voice)' : ' (Hindi voice)'}`}
+                  side="bottom"
+                >
+                  <button
+                    role="radio"
+                    aria-checked={courseLanguage === lang}
+                    disabled={languageBusy}
+                    onClick={() => courseLanguage !== lang && setCourseLanguage(lang)}
+                    className={`h-full px-2.5 rounded-md text-xs font-semibold transition-colors disabled:opacity-60 ${
+                      courseLanguage === lang
+                        ? 'bg-accent text-white'
+                        : 'text-ink-soft dark:text-ink-faint-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark'
+                    }`}
+                  >
+                    {name}
+                  </button>
+                </Tooltip>
+              ))}
+            </div>
+          )}
+          {course.steps.some((st) => st.text?.trim()) && (
+            <Tooltip
+              label="Fix spelling in every step: kre → kare, typos like prablomatic → problematic"
+              side="bottom"
+            >
+              <button
+                onClick={fixAllSpelling}
+                disabled={fixingAll}
+                className={OUTLINE_BUTTON_CLASS}
+              >
+                {fixingAll ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <SpellCheck className="w-4 h-4" />
+                )}
+                <span className="hidden sm:inline">Fix spelling</span>
+              </button>
+            </Tooltip>
+          )}
           <Tooltip label="Short tutorials for every action" side="bottom">
             <button
               data-tour="help"
@@ -1118,6 +1433,7 @@ export function CourseEditorPage() {
               onUpdateStep={updateStep}
               onAddSubStep={() => addSubStep()}
               onAddFeatureWithBox={(region) => addSubStep(region)}
+              onBoxDrawn={removePointerInBox}
               onDeleteSubStep={deleteSubStep}
               onChangeScreenshot={pickReplacementImage}
               onSplit={splitUnit}
@@ -1156,6 +1472,15 @@ export function CourseEditorPage() {
                 onRecord={() => navigate(`/video/${course.id}`)}
                 onShowTutorial={() => setTutorialId('start')}
               />
+              {/* First step: who will read the steps aloud (one line, opens to choose). */}
+              {activeUnitIndex === 0 && (
+                <NarratorVoicePicker
+                  key={narratorId}
+                  compact
+                  onVoiceChange={(voice) => setNarratorId(voice.id)}
+                  onLanguageChange={onNarratorLanguage}
+                />
+              )}
             </div>
           ) : (
             // No steps yet (new, or everything deleted): pick either way to make it.
@@ -1209,6 +1534,7 @@ export function CourseEditorPage() {
               groupedSteps === saved.steps
                 ? saved
                 : { ...saved, steps: renumberDefaultLabels(groupedSteps) };
+            savedAtRef.current = next.updatedAt;
             setCourse(next);
             saveCourse(next);
           }}
@@ -1284,5 +1610,65 @@ export function CourseEditorPage() {
         onCancel={() => setConfirmAction(null)}
       />
     </div>
+  );
+}
+
+/** One-click comparisons for the walkthrough pace. */
+const PACE_PRESETS = [
+  { pace: 0.7, label: 'Relaxed' },
+  { pace: 1, label: 'Normal' },
+  { pace: 1.3, label: 'Quick' },
+];
+
+/**
+ * "How fast should the walkthrough feel?" in the editor's Voice panel: the
+ * course's pace (utils/pace) — preview, shared links and the video — with a
+ * miniature walkthrough that plays at that pace as you change it.
+ * @param {{ pace: number, language: string, onChange: (pace: number) => void }} props
+ */
+function PaceControl({ pace, language, onChange }) {
+  return (
+    <section className="rounded-2xl border border-line dark:border-line-dark bg-panel dark:bg-panel-dark px-4 py-3">
+      <p className="flex items-center justify-between text-sm font-semibold text-ink dark:text-ink-soft-dark">
+        How fast should the walkthrough feel?
+        <span className="font-mono text-xs text-ink-faint dark:text-ink-faint-dark">
+          {paceLabel(pace)}
+        </span>
+      </p>
+      <div className="mt-2 flex items-center gap-3">
+        <span className="text-[11px] text-ink-faint dark:text-ink-faint-dark">Slower</span>
+        <input
+          type="range"
+          min={PACE.min}
+          max={PACE.max}
+          step={PACE.step}
+          value={pace}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="flex-1 accent-accent"
+          aria-label="Walkthrough pace"
+        />
+        <span className="text-[11px] text-ink-faint dark:text-ink-faint-dark">Faster</span>
+      </div>
+      <div className="mt-1.5 mb-2.5 flex gap-1.5">
+        {PACE_PRESETS.map((p) => (
+          <button
+            key={p.pace}
+            type="button"
+            onClick={() => onChange(p.pace)}
+            className={`flex-1 h-8 rounded-lg text-xs font-semibold transition-colors ${
+              Math.abs(pace - p.pace) < 0.001
+                ? 'bg-accent text-white'
+                : 'bg-paper-2 dark:bg-paper-2-dark text-ink-soft hover:text-accent'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <PaceDemo pace={pace} language={language} />
+      <p className="mt-1 text-[11px] text-ink-faint dark:text-ink-faint-dark">
+        Changes the preview, shared links and the video. The voice keeps its own speed.
+      </p>
+    </section>
   );
 }

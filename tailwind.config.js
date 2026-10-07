@@ -55,11 +55,17 @@ export default {
       animation: {
         'pulse-rec': 'pulse-rec 1s ease-in-out infinite',
         'spin-slow': 'spin 2.2s linear infinite',
+        // Loading screen (hooks/useLoading): waits 300ms so quick calls don't flash.
+        'fade-in-late': 'fade-in 0.2s ease-out 0.3s both',
       },
       keyframes: {
         'pulse-rec': {
           '0%, 100%': { opacity: '1' },
           '50%': { opacity: '0.25' },
+        },
+        'fade-in': {
+          from: { opacity: '0' },
+          to: { opacity: '1' },
         },
       },
     },

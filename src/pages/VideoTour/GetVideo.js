@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, MonitorPlay, Upload, Square, Loader2, PlayCircle } from 'lucide-react';
 import { Tooltip } from '@/components/ui/Tooltip';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
 import { TutorialDialog } from '@/components/tutorial/TutorialDialog';
 import { formatDuration } from '@/utils';
 import { isScreenRecordingSupported, startScreenRecording } from '@/services/video/screenRecorder';
@@ -30,7 +30,6 @@ import { isScreenRecordingSupported, startScreenRecording } from '@/services/vid
  */
 export function GetVideo({ title, onVideo, onUseScreenshots }) {
   const navigate = useNavigate();
-  const { notify } = useToast();
   const [recording, setRecording] = useState(null); // { startedAt, floating } while recording
   const [elapsed, setElapsed] = useState(0);
   const [busy, setBusy] = useState(false); // saving the video
@@ -67,7 +66,7 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
     try {
       await onVideo({ blob, durationSec });
     } catch {
-      notify("Couldn't save the video. Please try again.", 'error');
+      toast.error("Couldn't save the video. Please try again.");
     } finally {
       if (mountedRef.current) setBusy(false);
     }
@@ -81,7 +80,7 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
           if (!mountedRef.current) return;
           setRecording(null);
           if (!blob.size) {
-            notify('Nothing was recorded. Please try again.', 'error');
+            toast.error('Nothing was recorded. Please try again.');
             return;
           }
           saveVideo(blob, durationMs / 1000);
@@ -95,7 +94,7 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
     } catch (err) {
       // The user closed the share picker: just stay here.
       if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') return;
-      notify("Couldn't start recording. Try uploading a video instead.", 'error');
+      toast.error("Couldn't start recording. Try uploading a video instead.");
     }
   };
 
@@ -107,7 +106,7 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
       const file = input.files?.[0];
       if (!file) return;
       if (!file.type.startsWith('video/')) {
-        notify('Please choose a video file', 'error');
+        toast.error('Please choose a video file');
         return;
       }
       saveVideo(file, null);

@@ -44,6 +44,7 @@ export function EmbedPage() {
     <WalkthroughPlayer
       steps={steps}
       title={shareable.c.title || 'Walkthrough'}
+      pace={shareable.c.pace}
       onExit={() => {}}
       embedded
     />

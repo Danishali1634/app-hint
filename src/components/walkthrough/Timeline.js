@@ -34,6 +34,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ListVideo, Plus, X } from 'lucide-react';
 import { buildTimeline } from '@/services/video/timeline';
+import { afterVoicePauseMs, pacedTiming } from '@/utils/pace';
 import { WALKTHROUGH_TIMING } from '@/constants';
 import { getStepTitles } from '@/utils/course';
 import { formatTime } from '@/utils';
@@ -51,11 +52,20 @@ export function speakingMs(text) {
  * @param {import('@/types').WalkthroughStep[]} steps
  * @param {Record<string, number>} voiceMs  known recording lengths by step id
  */
-function livePlan(steps, voiceMs) {
+function livePlan(steps, voiceMs, pace = 1) {
   const narration = steps.map((s) =>
-    s.audioData ? (voiceMs[s.id] ?? Math.max(3000, speakingMs(s.text))) : speakingMs(s.text),
+    s.audioData
+      ? (voiceMs[s.id] ?? Math.max(3000, speakingMs(s.text)))
+      : s.text?.trim()
+        ? speakingMs(s.text)
+        : pacedTiming(pace).silentNarrate,
   );
-  return buildTimeline(steps, narration).segments.filter((seg) => seg.phase !== 'done');
+  // As in the player: a slow pace pauses after each spoken line (in the action phase).
+  const pause = afterVoicePauseMs(pace);
+  const actionExtra = steps.map((s) => (s.audioData || s.text?.trim() ? pause : 0));
+  return buildTimeline(steps, narration, { pace, actionExtra }).segments.filter(
+    (seg) => seg.phase !== 'done',
+  );
 }
 
 /**
@@ -63,10 +73,10 @@ function livePlan(steps, voiceMs) {
  * @param {import('@/types').WalkthroughStep[]} steps
  * @param {Record<string, number>} [voiceMs]
  */
-export function stepTimings(steps, voiceMs = {}) {
+export function stepTimings(steps, voiceMs = {}, pace = 1) {
   if (steps.length === 0) return { spans: [], total: 0 };
   const spans = steps.map(() => ({ start: Infinity, end: 0 }));
-  for (const seg of livePlan(steps, voiceMs)) {
+  for (const seg of livePlan(steps, voiceMs, pace)) {
     const span = spans[seg.stepIndex];
     span.start = Math.min(span.start, seg.start);
     span.end = Math.max(span.end, seg.start + seg.duration);
@@ -98,8 +108,8 @@ export function stepTimings(steps, voiceMs = {}) {
  * @param {number} t
  * @returns {Moment}
  */
-export function momentAt(steps, voiceMs, t) {
-  const plan = livePlan(steps, voiceMs);
+export function momentAt(steps, voiceMs, t, pace = 1) {
+  const plan = livePlan(steps, voiceMs, pace);
   const last = plan[plan.length - 1];
   const clamped = Math.max(0, Math.min(t, last.start + last.duration - 1));
   const seg = plan.find((s) => clamped >= s.start && clamped < s.start + s.duration) ?? last;
@@ -126,6 +136,7 @@ const DRAG_PX = 3;
  *   playing: boolean,
  *   finished: boolean,
  *   voiceMs: Record<string, number>,
+ *   pace?: number,           // the course's pace (utils/pace)
  *   onSeek: (moment: Moment) => void,
  *   onInsert?: (position: number) => void,  // edit mode: insert a step at this position (0 = first)
  *   dark?: boolean,          // on the compact player's dark gradient
@@ -140,12 +151,13 @@ export function Timeline({
   playing,
   finished,
   voiceMs,
+  pace = 1,
   onSeek,
   onInsert,
   dark = false,
   className = '',
 }) {
-  const { spans, total } = useMemo(() => stepTimings(steps, voiceMs), [steps, voiceMs]);
+  const { spans, total } = useMemo(() => stepTimings(steps, voiceMs, pace), [steps, voiceMs, pace]);
   const titles = useMemo(() => getStepTitles(steps), [steps]);
   const [elapsed, setElapsed] = useState(0);
   const barRef = useRef(null);
@@ -195,7 +207,7 @@ export function Timeline({
     const found = spans.findIndex((s) => t >= s.start && t < s.start + s.duration);
     return found === -1 ? steps.length - 1 : found;
   };
-  const seekToStep = (i) => onSeek(momentAt(steps, voiceMs, spans[i].start));
+  const seekToStep = (i) => onSeek(momentAt(steps, voiceMs, spans[i].start, pace));
   /** A click: the exact moment — or a step's start when right on its boundary. */
   const clickAt = ({ t, x, width }) => {
     const i = indexAtTime(t);
@@ -203,7 +215,7 @@ export function Timeline({
     if (Math.abs(x - px(spans[i].start)) <= SNAP_PX) return seekToStep(i);
     const next = spans[i + 1];
     if (next && Math.abs(x - px(next.start)) <= SNAP_PX) return seekToStep(i + 1);
-    onSeek(momentAt(steps, voiceMs, t));
+    onSeek(momentAt(steps, voiceMs, t, pace));
   };
 
   const onPointerDown = (e) => {
@@ -227,7 +239,7 @@ export function Timeline({
     const point = pointAt(e.clientX);
     setScrubTime(null);
     // A drag lands on the exact time (never snaps); a plain click may snap.
-    if (press.dragging) onSeek(momentAt(steps, voiceMs, point.t));
+    if (press.dragging) onSeek(momentAt(steps, voiceMs, point.t, pace));
     else clickAt(point);
     if (e.pointerType !== 'mouse') setHover(null);
   };
@@ -418,8 +430,8 @@ export function StepsToggle({ open, onToggle }) {
  *   className?: string,
  * }} props
  */
-export function StepList({ steps, index, voiceMs, onSeek, onClose, className = '' }) {
-  const { spans, total } = useMemo(() => stepTimings(steps, voiceMs), [steps, voiceMs]);
+export function StepList({ steps, index, voiceMs, pace = 1, onSeek, onClose, className = '' }) {
+  const { spans, total } = useMemo(() => stepTimings(steps, voiceMs, pace), [steps, voiceMs, pace]);
   const titles = useMemo(() => getStepTitles(steps), [steps]);
   const listRef = useRef(null);
 
@@ -457,7 +469,7 @@ export function StepList({ steps, index, voiceMs, onSeek, onClose, className = '
           return (
             <li key={s.id}>
               <button
-                onClick={() => onSeek(momentAt(steps, voiceMs, spans[i].start))}
+                onClick={() => onSeek(momentAt(steps, voiceMs, spans[i].start, pace))}
                 aria-current={active ? 'step' : undefined}
                 aria-label={`Go to step ${number}${heading ? `: ${heading}` : ''} (${time})`}
                 title={heading || `Step ${number}`}

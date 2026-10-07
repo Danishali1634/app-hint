@@ -8,10 +8,13 @@
  *               { id, error }             message
  */
 
+import { registerExtraVoices } from './extraVoices';
+
 self.onmessage = async ({ data }) => {
   const { id, text, voiceId } = data;
   try {
     const tts = await import('@diffusionstudio/vits-web');
+    registerExtraVoices(tts);
     const blob = await tts.predict({ text, voiceId }, (progress) => {
       self.postMessage({ id, progress: progress.total ? progress.loaded / progress.total : null });
     });

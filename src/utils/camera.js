@@ -94,3 +94,29 @@ export function regionCenter(r) {
 export function focusedCenter(region) {
   return regionCenter(projectRegion(region, computeFocusView(region)));
 }
+
+/** The camera glide lasts this share of the focus phase (the rest is settling). */
+export const glideMs = (focusMs) => Math.round(focusMs * 0.95);
+
+/**
+ * Where the camera pulls back to while travelling between two areas of the
+ * same screen: both areas in view, zoomed out clearly more than either (never
+ * below 1×). The move then reads as "from here… to there" instead of a
+ * barely-visible slide. Used by the player and the video alike.
+ * @param {Region} from
+ * @param {Region} to
+ * @returns {CameraView}
+ */
+export function travelView(from, to) {
+  const x = Math.min(from.x, to.x);
+  const y = Math.min(from.y, to.y);
+  const both = {
+    x,
+    y,
+    w: Math.max(from.x + from.w, to.x + to.w) - x,
+    h: Math.max(from.y + from.h, to.y + to.h) - y,
+  };
+  const closest = Math.min(computeFocusView(from).s, computeFocusView(to).s);
+  const s = Math.max(1, Math.min(computeFocusView(both).s, closest * 0.72));
+  return computeFocusView(both, s, { x: 50, y: 50 });
+}

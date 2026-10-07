@@ -27,10 +27,16 @@
  * Voice recording / upload is switched off for now (see the commented-out
  * AudioRecorderPanel below); text is read by the AI voice.
  *
+ * QUICK CARD: after you draw a box, a small card opens right next to it
+ * (QuickBoxCard): Click · Look · Type and what to say, with the cursor already
+ * in the text. Enter or "Done" closes it; clicking the box's text opens it again.
+ *
  * Next / Previous (or Ctrl/⌘ + Enter in a description) moves between steps in
  * place. The component only renders and reports; the page owns the course.
  */
 
+import { typeStepLine } from '@/services/text/demoLines';
+import { narrationLanguage } from '@/services/audio/neuralVoice';
 import { useEffect, useRef, useState } from 'react';
 import {
   Plus,
@@ -102,6 +108,7 @@ const ACTIONS = [
  *   onUpdateStep: (stepId: string, patch: Partial<Step>) => void,
  *   onAddSubStep: () => void,        // new step after the last one, selected
  *   onAddFeatureWithBox?: (region) => void,  // a box drawn when this feature already has one → the next feature
+ *   onBoxDrawn?: (region) => void,   // every new box (e.g. to remove a mouse pointer inside it)
  *   onDeleteSubStep: (stepId: string) => void,
  *   onChangeScreenshot: () => void,
  *   onSplit: () => void,             // every step → its own screen
@@ -127,6 +134,7 @@ export function GlobalStepEditor({
   onUpdateStep,
   onAddSubStep,
   onAddFeatureWithBox,
+  onBoxDrawn,
   onDeleteSubStep,
   onChangeScreenshot,
   onSplit,
@@ -169,6 +177,16 @@ export function GlobalStepEditor({
   useEffect(() => {
     setReplacing(null);
     setWantsAnother(false);
+  }, [activeStepId]);
+
+  // The small card next to the box (Click · Look · Type + what to say).
+  // It opens by itself when a feature has a box but no text yet,
+  // and after every new box. "Done" or × closes it.
+  const [cardOpen, setCardOpen] = useState(false);
+  useEffect(() => {
+    setCardOpen(targets.length > 0 && !active.text?.trim());
+    // Only when another feature is selected, not on every key press.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStepId]);
 
   // Next / Previous: after the switch focus that step's description.
@@ -216,6 +234,8 @@ export function GlobalStepEditor({
   // needed between them). "Add highlight" (wantsAnother) adds a box to this same
   // feature instead, and "Redraw" replaces one.
   const addTarget = (region) => {
+    setCardOpen(true); // a box was drawn → show the card next to it
+    onBoxDrawn?.(region);
     if (replacing !== null && targets[replacing]) {
       setTargets(targets.map((t, n) => (n === replacing ? region : t)));
       setReplacing(null);
@@ -436,7 +456,17 @@ export function GlobalStepEditor({
             highlightId={hovered ?? highlightId}
             onHoverSubStep={setHovered}
             caption={{ text: active.text || '', action: getStepAction(active) }}
-            onCaptionClick={() => document.getElementById(`area-desc-${active.id}`)?.focus()}
+            onCaptionClick={() => setCardOpen(true)}
+            boxEditor={
+              cardOpen && (
+                <QuickBoxCard
+                  step={active}
+                  number={subNumber}
+                  onUpdate={(patch) => onUpdateStep(active.id, patch)}
+                  onDone={() => setCardOpen(false)}
+                />
+              )
+            }
           />
         </div>
       </div>
@@ -568,6 +598,119 @@ export function GlobalStepEditor({
             </div>
           </div>
         }
+      </div>
+    </div>
+  );
+}
+
+/** Example text for each action, shown in the empty text box. */
+const SAY_EXAMPLES = {
+  click: 'e.g. Click "Save" to store the order',
+  look: 'e.g. Here you can see the total amount',
+  type: 'e.g. Type the customer name here',
+};
+
+/**
+ * The small card right next to the box you just drew. Everything for this
+ * feature in one place: what the viewer does + what we say. No need to go
+ * to the panel on the right.
+ */
+function QuickBoxCard({ step, number, onUpdate, onDone }) {
+  const textRef = useRef(null);
+  const action = getStepAction(step);
+
+  // Put the cursor in the text box, so you can start typing right away.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => textRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [step.id]);
+
+  const handleKeyDown = (e) => {
+    // Enter = done, Shift + Enter = new line
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      onDone();
+    }
+    if (e.key === 'Escape') onDone();
+  };
+
+  return (
+    <div className="hs-area-open rounded-xl border border-accent/40 bg-panel dark:bg-panel-dark shadow-premium p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-ink dark:text-ink-soft-dark">Feature {number}</p>
+        <Tooltip label="Close (you can open it again by clicking the box's text)">
+          <button
+            onClick={onDone}
+            className={`${SMALL_ICON_BUTTON_CLASS} hover:text-ink hover:bg-paper-2 dark:hover:bg-paper-2-dark`}
+            aria-label="Close"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </Tooltip>
+      </div>
+
+      {/* 1. What the viewer does */}
+      <div>
+        <p className="mb-1.5 text-xs font-semibold text-ink-soft dark:text-ink-faint-dark">
+          1. The viewer should
+        </p>
+        <div className="flex gap-1">
+          {ACTIONS.map(({ value, Icon, text }) => (
+            <button
+              key={value}
+              onClick={() => onUpdate({ action: value })}
+              className={`flex-1 flex items-center justify-center gap-1 h-8 rounded-lg border text-xs font-semibold transition-colors ${
+                action === value
+                  ? 'border-accent bg-accent text-white'
+                  : 'border-line dark:border-line-dark text-ink-soft dark:text-ink-faint-dark hover:border-accent/60'
+              }`}
+              aria-pressed={action === value}
+            >
+              <Icon className="w-3.5 h-3.5" /> {text}
+            </button>
+          ))}
+        </div>
+        {action === 'type' && (
+          <input
+            type="text"
+            value={step.typeValue || ''}
+            onChange={(e) => onUpdate({ typeValue: e.target.value })}
+            placeholder="Text to type (optional)"
+            className="mt-1.5 w-full px-2.5 py-1.5 rounded-lg bg-panel dark:bg-panel-dark border border-line dark:border-line-dark text-xs text-ink dark:text-ink-soft-dark outline-none focus:border-accent"
+          />
+        )}
+      </div>
+
+      {/* 2. What we say */}
+      <div>
+        <p className="mb-1.5 text-xs font-semibold text-ink-soft dark:text-ink-faint-dark">
+          2. What should we say?
+        </p>
+        <textarea
+          ref={textRef}
+          value={step.text || ''}
+          onChange={(e) => onUpdate({ text: e.target.value })}
+          onKeyDown={handleKeyDown}
+          rows={3}
+          placeholder={
+            action === 'type'
+              ? `Leave empty to say: ${typeStepLine(step.typeValue, narrationLanguage())}`
+              : SAY_EXAMPLES[action]
+          }
+          className="w-full px-2.5 py-2 rounded-lg bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent resize-none"
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-ink-faint dark:text-ink-faint-dark">
+          Enter = done · Shift+Enter = new line
+        </span>
+        <button
+          onClick={onDone}
+          className="flex items-center gap-1 px-3 h-8 rounded-lg bg-accent text-white text-xs font-semibold hover:bg-accent-dark transition-colors"
+        >
+          <Check className="w-3.5 h-3.5" /> Done
+        </button>
       </div>
     </div>
   );
@@ -872,6 +1015,12 @@ function SubStepCard({
               action={action}
               rows={2}
               grow
+              // A 'type' step with nothing written says what is typed — show it.
+              {...(action === 'type'
+                ? {
+                    placeholder: `Leave empty to say: ${typeStepLine(step.typeValue, narrationLanguage())}`,
+                  }
+                : {})}
             />
           )}
         </>

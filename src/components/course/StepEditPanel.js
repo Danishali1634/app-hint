@@ -26,7 +26,7 @@ import { StepScreenshotUpload } from '@/components/course/StepScreenshotUpload';
 // Voice recording / upload is switched off for now.
 // import { AudioRecorderPanel } from '@/components/course/AudioRecorderPanel';
 import { DescriptionField } from '@/components/course/DescriptionField';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
 import { Tooltip } from '@/components/ui/Tooltip';
 
 /** @typedef {import('@/types').Step} Step */
@@ -73,16 +73,15 @@ export function StepEditPanel({
   onDelete,
   onClose,
 }) {
-  const { notify } = useToast();
   const [drawMode, setDrawMode] = useState(false);
 
   const handleImageFile = async (file) => {
     if (!file.type.startsWith('image/')) {
-      notify('Please choose an image file (PNG, JPG, ...)', 'error');
+      toast.error('Please choose an image file (PNG, JPG, ...)');
       return;
     }
     if (file.size > MAX_IMAGE_BYTES) {
-      notify('Image must be under 10MB', 'error');
+      toast.error('Image must be under 10MB');
       return;
     }
     const mediaId = nextId('media');

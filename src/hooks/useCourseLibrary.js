@@ -9,8 +9,10 @@
  *   pages behave identically and each page only decides its layout.
  *
  * FLOW
- *   mount → purgeExpiredCourses() (COURSE_RETENTION_DAYS) → getAllCourses()
- *   any mutation → reload() so the UI always mirrors IndexedDB.
+ *   courses come from the global list (hooks/useCourses), not a fetch of their own.
+ *   mount → purgeExpiredCourses() (COURSE_RETENTION_DAYS) → reload()
+ *   actions run through the global loading screen (hooks/useLoading): the app is
+ *   locked while they run and ALWAYS unlocked again, also when the API fails.
  *
  * USAGE
  *   const library = useCourseLibrary();
@@ -18,34 +20,38 @@
  *   {library.overlays}   // delete dialog + share/video overlays, render once
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  deleteCourse,
-  duplicateCourse,
-  getAllCourses,
-  purgeExpiredCourses,
-} from '@/services/storage/db';
+import { deleteCourse, duplicateCourse, purgeExpiredCourses } from '@/services/storage/db';
 import { exportCourseZip, importCourseZip } from '@/services/export/zip';
 import { COURSE_RETENTION_DAYS } from '@/constants';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
-import { useToast } from '@/hooks/useToast';
+import { toast } from 'react-toastify';
 import { useCourseSharing } from '@/hooks/useCourseSharing';
+import { useCourses } from '@/hooks/useCourses';
+import { useLoading } from '@/hooks/useLoading';
 
 /** @typedef {import('@/types').Course} Course */
 
 export function useCourseLibrary() {
   const navigate = useNavigate();
-  const { notify } = useToast();
   const sharing = useCourseSharing();
-  const [courses, setCourses] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { courses, loading, reload } = useCourses();
+  const { run } = useLoading();
   const [deleteTarget, setDeleteTarget] = useState(null); // course awaiting confirmation
 
-  const reload = useCallback(async () => {
-    setCourses(await getAllCourses());
-    setLoading(false);
-  }, []);
+  /**
+   * Runs an action behind the global "please wait" screen.
+   * On error it shows a message. Returns the result, or undefined if cancelled / failed.
+   */
+  const action = async (task, message, failMessage) => {
+    try {
+      return await run(task, message);
+    } catch (err) {
+      toast.error(`${failMessage}: ${err.message}`);
+      return undefined;
+    }
+  };
 
   // First load: clean up expired courses, then list.
   // `cancelled`: if this effect was superseded (StrictMode re-run, unmount),
@@ -53,51 +59,69 @@ export function useCourseLibrary() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      await purgeExpiredCourses();
+      try {
+        await purgeExpiredCourses();
+      } catch (err) {
+        console.warn('Auto-delete of old courses failed:', err.message); // not worth a toast
+      }
       if (cancelled) return;
       await reload();
     })();
     return () => {
       cancelled = true;
     };
-  }, [reload, notify]);
+  }, [reload]);
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
     const target = deleteTarget;
     setDeleteTarget(null); // close first, so a double-click can't delete twice
-    await deleteCourse(target.id); // also deletes its media
-    notify(`“${target.title}” deleted`);
+    const done = await action(
+      async () => {
+        await deleteCourse(target.id); // also deletes its media
+        return true;
+      },
+      'Deleting the course…',
+      'Could not delete the course',
+    );
+    if (done) toast(`“${target.title}” deleted`);
     reload();
   };
 
   const duplicate = async (course) => {
-    const copy = await duplicateCourse(course.id);
-    notify(`Duplicated as “${copy?.title}”`, 'success');
+    const copy = await action(
+      () => duplicateCourse(course.id),
+      'Duplicating the course…',
+      'Could not duplicate the course',
+    );
+    if (copy) toast.success(`Duplicated as “${copy.title}”`);
     reload();
   };
 
   const exportZip = async (course) => {
-    try {
-      await exportCourseZip(course);
-      notify('Backup ZIP downloaded', 'success');
-    } catch {
-      notify('Export failed', 'error');
-    }
+    const done = await action(
+      async () => {
+        await exportCourseZip(course);
+        return true;
+      },
+      'Preparing the backup ZIP…',
+      'Export failed',
+    );
+    if (done) toast.success('Backup ZIP downloaded');
   };
 
   /** <input type="file"> change handler for importing an exported .zip. */
   const importZip = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    try {
-      const imported = await importCourseZip(file);
-      notify(`Imported “${imported.title}”`, 'success');
-      reload();
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Import failed', 'error'); // user-readable
-    }
     e.target.value = ''; // allow importing the same file again
+    const imported = await action(
+      () => importCourseZip(file),
+      'Importing the course…',
+      'Import failed',
+    );
+    if (imported) toast.success(`Imported “${imported.title}”`);
+    reload();
   };
 
   /** All CourseCard callbacks for one course. */

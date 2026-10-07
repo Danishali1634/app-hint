@@ -4,13 +4,13 @@
  * decides what each phase LOOKS like.
  *
  * LAYERS (bottom → top, all inside a box with the screenshot's exact ratio)
- *   camera     the screenshot; zoomed/panned with a CSS transform (camera.js).
+ *   camera     the screenshot; zoomed/panned with a transform (camera.js).
  *              Sub-steps of one Global Step are one page: when the screenshot
  *              changes, the new one crossfades in INSIDE the gliding camera.
- *   spotlight  a rounded "hole" over the feature; a huge box-shadow dims the rest
- *              (several targets: an SVG mask with one hole per target, drawn
- *              inside the camera layer so the holes zoom with the screenshot)
- *   ring       pulsing accent border around the feature (+ flash on click)
+ *   focus      ONE persistent focus for the page (FocusCamera): a dim with a
+ *              rounded hole + a pulsing accent ring per target. Between steps
+ *              of the same page it is never recreated or faded: its geometry
+ *              morphs to the next target, on the same clock as the camera.
  *   cursor     animated mouse pointer that glides in and clicks  ('click' steps;
  *              with several targets it clicks them one after another)
  *   typing     the value being typed into the area, with a caret  ('type' steps)
@@ -21,7 +21,8 @@
  * WHAT EACH PHASE SHOWS
  *   enter     screenshot appears (grows out of the previous click, or fades in)
  *   overview  full screenshot, no highlight — "this is the page"
- *   focus     camera zooms into the feature, everything else dims
+ *   focus     camera zooms into the feature, everything else dims; on the same
+ *             page the focus morphs from the previous target to this one
  *   point     pointer glides onto the feature                     (click only)
  *   narrate   caption + voice; ring pulses; pointer hovers
  *   narrate   … 'type' steps: the value starts typing into the area
@@ -33,20 +34,22 @@
  * borders, the pointer and text stay sharp at any zoom level.
  */
 
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Mic, Volume2 } from 'lucide-react';
 import { formatDuration } from '@/utils';
 import { captionAwareView, placeCaption } from '@/utils/captionPlacement';
 import { getFocusRegion, getStepTargets, isClickAction } from '@/utils/course';
 import { splitCaptionParts } from '@/utils/captionParts';
 import { WALKTHROUGH_TIMING } from '@/constants';
+import { pacedTiming } from '@/utils/pace';
 import {
   OVERVIEW_VIEW,
-  cameraTransform,
   computeFocusView,
   projectRegion,
   regionCenter,
+  glideMs,
 } from '@/utils/camera';
+import { FocusCamera } from './FocusCamera';
 
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
 /** @typedef {import('@/types').Region} Region */
@@ -82,6 +85,9 @@ function boxStyle(r, pad = 0) {
  *   narration: { mode: string, speaking: boolean, current: number, duration: number },
  *   floatingCaption: boolean,      // false on small screens → player docks it below
  *   continued?: boolean,         // same screenshot as the previous step: camera glides, no re-entry
+ *   fromRegion?: import('@/types').Region | null,  // continued: the previous step's area (the
+ *                                // caption enters from the direction the focus came from)
+ *   pace?: number,               // the course's pace: camera and pointer move slower/faster
  *   areaSize?: { width: number, height: number },  // the box the stage is centred in; the
  *                                                  // caption may use its free space too
  *   compactCaption?: boolean,    // small embeds: the one-line caption card
@@ -99,6 +105,8 @@ export function WalkthroughStage({
   narration,
   floatingCaption,
   continued = false,
+  fromRegion = null,
+  pace = 1,
   areaSize,
   compactCaption = false,
   reserveBottom = 0,
@@ -106,7 +114,6 @@ export function WalkthroughStage({
   // All targets are highlighted together; the camera frames the box around them.
   const targets = getStepTargets(step);
   const region = getFocusRegion(step);
-  const multi = targets.length > 1;
   const isClick = !!region && isClickAction(step);
   const isType = !!region && step.action === 'type';
 
@@ -146,20 +153,45 @@ export function WalkthroughStage({
         })
       : computeFocusView(region);
   const isFocused = !!region && (FOCUSED_PHASES.includes(phase) || (phase === 'exit' && isClick));
-  // While the camera glides from the previous step to this one, the ring and the
-  // spotlight's bright window would already sit at their end position over
-  // something else: they fade in once the feature has arrived under them (like
-  // a real camera settling on it).
-  const ringOn = isFocused && !(continued && phase === 'focus');
+  // The focus is ONE persistent object for the whole page (FocusCamera): on the
+  // same page it is never faded out and rebuilt — its geometry morphs from the
+  // previous target to this one (inward for a child, outward for a parent,
+  // straight across for a sibling). Opacity only brings it in on a new screen.
+  const ringOn = isFocused;
+  // Motion system (index.css): enter = first focus on this screen; arrive = the
+  // target receives attention once the focus has settled on it.
+  const focusEntering = phase === 'focus' && !continued;
+  const focusArriving = phase === (isClick ? 'point' : 'narrate');
+  const ringMotion = focusEntering
+    ? 'hs-focus-enter'
+    : focusArriving
+      ? 'hs-focus-arrive'
+      : isFocused
+        ? 'hs-ring-pulse'
+        : '';
+  // The dim fades in softly behind a first focus; quickly otherwise.
+  const dimFade = focusEntering
+    ? { '--hs-fade': '900ms', '--hs-fade-delay': '200ms' }
+    : { '--hs-fade': '350ms' };
 
+  // One move per step change, its length set by the course's pace.
+  const glide = glideMs(pacedTiming(pace).focus);
   const view = isFocused ? focusView : OVERVIEW_VIEW;
-  const projected = region ? projectRegion(region, view) : null;
+  // The caption slides in from the direction the focus travelled (same page).
+  const captionEnterFrom = (() => {
+    if (!continued || !fromRegion || !region) return null;
+    const a = regionCenter(fromRegion);
+    const b = regionCenter(region);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    return { x: Math.round((-dx / len) * 14), y: Math.round((-dy / len) * 14) };
+  })();
   const projectedTargets = targets.map((t) => projectRegion(t, view));
   // Where the pointer clicks: each target in turn (one target → its centre).
   const clickPoints = targets.map((t) => regionCenter(projectRegion(t, focusView)));
   const clickIndex = useClickSequence(phase, isClick ? clickPoints.length : 0);
   const clickPoint = clickPoints[clickIndex] ?? null;
-  const maskId = useId();
   const [layers, onLayerLoaded] = useScreenCrossfade(step.imageData);
 
   // ── Stage enter / exit animation ──
@@ -188,11 +220,29 @@ export function WalkthroughStage({
   return (
     <div
       className={`relative ${stageAnimation}`}
-      style={{ width, height, transformOrigin: stageOrigin }}
+      style={{
+        width,
+        height,
+        transformOrigin: stageOrigin,
+        '--hs-glide': `${glide}ms`,
+        '--hs-point': `${pacedTiming(pace).point}ms`,
+      }}
     >
       <div className="absolute inset-0 rounded-2xl overflow-hidden shadow-2xl ring-1 ring-black/10 dark:ring-white/10 bg-paper-2 dark:bg-paper-2-dark">
-        {/* Camera: the screenshot itself */}
-        <div className="hs-camera absolute inset-0" style={{ transform: cameraTransform(view) }}>
+        {/* Camera + the one persistent focus (spotlight holes and rings) */}
+        <FocusCamera
+          view={view}
+          boxes={targets}
+          duration={glide}
+          width={width}
+          height={height}
+          padding={SPOTLIGHT_PADDING}
+          visible={ringOn}
+          fadeStyle={dimFade}
+          ringClass={ringMotion}
+          ringKey={String(clickIndex)}
+          pressIndex={isPressing ? clickIndex : -1}
+        >
           {/* Screenshot layers: a new screenshot of the same page fades in over
               the previous one INSIDE the moving camera (see useScreenCrossfade) */}
           {layers.map((layer, n) => (
@@ -211,49 +261,7 @@ export function WalkthroughStage({
               draggable={false}
             />
           ))}
-          {multi && (
-            <MultiSpotlight
-              id={maskId}
-              targets={targets}
-              visible={ringOn}
-              padX={(SPOTLIGHT_PADDING / (width * focusView.s)) * 100}
-              padY={(SPOTLIGHT_PADDING / (height * focusView.s)) * 100}
-            />
-          )}
-        </div>
-
-        {multi &&
-          projectedTargets.map((box, n) => (
-            <div
-              key={isPressing && n === clickIndex ? `ring-press-${n}` : `ring-${n}`}
-              className={`hs-follow-camera absolute rounded-xl border-[3px] border-accent pointer-events-none ${
-                isPressing && n === clickIndex ? 'hs-ring-flash' : isFocused ? 'hs-ring-pulse' : ''
-              }`}
-              style={{ ...boxStyle(box, SPOTLIGHT_PADDING), opacity: ringOn ? 1 : 0 }}
-            />
-          ))}
-
-        {region && !multi && (
-          <>
-            {/* Spotlight: dims everything except the feature */}
-            <div
-              className="hs-follow-camera absolute rounded-xl pointer-events-none"
-              style={{
-                ...boxStyle(projected, SPOTLIGHT_PADDING),
-                boxShadow: '0 0 0 200vmax rgba(8, 10, 14, 0.62)',
-                opacity: ringOn ? 1 : 0,
-              }}
-            />
-            {/* Ring: pulses while explaining, flashes on click */}
-            <div
-              key={isPressing ? 'ring-press' : 'ring'}
-              className={`hs-follow-camera absolute rounded-xl border-[3px] border-accent pointer-events-none ${
-                isPressing ? 'hs-ring-flash' : isFocused ? 'hs-ring-pulse' : ''
-              }`}
-              style={{ ...boxStyle(projected, SPOTLIGHT_PADDING), opacity: ringOn ? 1 : 0 }}
-            />
-          </>
-        )}
+        </FocusCamera>
 
         {isType &&
           TYPING_PHASES.includes(phase) &&
@@ -294,6 +302,7 @@ export function WalkthroughStage({
 
       {showCaption && floatingCaption && (
         <FloatingCaption
+          enterFrom={captionEnterFrom}
           anchor={region ? projectRegion(region, focusView) : null}
           stageWidth={width}
           stageHeight={height}
@@ -460,51 +469,6 @@ function useClickSequence(phase, count) {
 }
 
 /**
- * Spotlight for several targets: dims the screenshot with one rounded hole
- * per target. Drawn INSIDE the camera layer in image % (viewBox 0–100), so
- * the holes zoom and pan exactly with the screenshot. `padX`/`padY` are the
- * spotlight padding converted to image % at the focus zoom.
- */
-function MultiSpotlight({ id, targets, visible, padX, padY }) {
-  const maskId = `hs-spot-${id.replace(/:/g, '')}`;
-  return (
-    <svg
-      className="absolute inset-0 w-full h-full pointer-events-none"
-      viewBox="0 0 100 100"
-      preserveAspectRatio="none"
-      style={{ opacity: visible ? 1 : 0, transition: 'opacity 600ms ease' }}
-      aria-hidden="true"
-    >
-      <defs>
-        <mask id={maskId} maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
-          <rect x="0" y="0" width="100" height="100" fill="white" />
-          {targets.map((t, n) => (
-            <rect
-              key={n}
-              x={t.x - padX}
-              y={t.y - padY}
-              width={t.w + padX * 2}
-              height={t.h + padY * 2}
-              rx={padX * 2}
-              ry={padY * 2}
-              fill="black"
-            />
-          ))}
-        </mask>
-      </defs>
-      <rect
-        x="0"
-        y="0"
-        width="100"
-        height="100"
-        fill="rgba(8, 10, 14, 0.62)"
-        mask={`url(#${maskId})`}
-      />
-    </svg>
-  );
-}
-
-/**
  * Mouse pointer whose TIP sits exactly at (x, y) % of the stage.
  * Moves with a CSS transition; presses + ripples when `pressing`.
  */
@@ -590,7 +554,16 @@ function getCaptionLayout({ width, height, areaSize, compact, reserveBottom }) {
  * left → least-overlap). It may use the free space around the stage too.
  * Without a region it sits at the bottom of the stage.
  */
-function FloatingCaption({ anchor, stageWidth, stageHeight, layout, size, compact, children }) {
+function FloatingCaption({
+  anchor,
+  stageWidth,
+  stageHeight,
+  layout,
+  size,
+  compact,
+  enterFrom = null,
+  children,
+}) {
   let style;
   if (!anchor) {
     style = compact
@@ -618,7 +591,16 @@ function FloatingCaption({ anchor, stageWidth, stageHeight, layout, size, compac
       className={`absolute z-20 ${compact ? 'pointer-events-none' : CAPTION_WIDTH_CLASS}`}
       style={{ ...style, width: layout.width }}
     >
-      <div className="hs-caption-in">{children}</div>
+      <div
+        className="hs-caption-in"
+        style={
+          enterFrom
+            ? { '--hs-from-x': `${enterFrom.x}px`, '--hs-from-y': `${enterFrom.y}px` }
+            : undefined
+        }
+      >
+        {children}
+      </div>
     </div>
   );
 }
@@ -685,7 +667,9 @@ export function CaptionContent({ step, stepNumber, narration, compact = false })
     return (
       <div className="flex items-start gap-2 rounded-xl bg-panel/95 dark:bg-panel-dark/95 backdrop-blur-md border border-line dark:border-line-dark shadow-xl px-2.5 py-2">
         <span className="w-5 h-5 rounded-full bg-accent text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">
-          {stepNumber}
+          <span key={stepNumber} className="hs-count-in">
+            {stepNumber}
+          </span>
         </span>
         <p className="text-xs leading-snug text-ink dark:text-ink-soft-dark line-clamp-2">
           {step.label && <strong className="font-semibold">{step.label}. </strong>}
@@ -699,7 +683,9 @@ export function CaptionContent({ step, stepNumber, narration, compact = false })
     return (
       <div className="flex items-start gap-2 rounded-xl bg-panel/95 dark:bg-panel-dark/95 backdrop-blur-md border border-line dark:border-line-dark shadow-xl px-2.5 py-2">
         <span className="w-5 h-5 rounded-full bg-accent text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">
-          {stepNumber}
+          <span key={stepNumber} className="hs-count-in">
+            {stepNumber}
+          </span>
         </span>
         <div className="min-w-0 flex-1">
           <CaptionText
@@ -717,7 +703,9 @@ export function CaptionContent({ step, stepNumber, narration, compact = false })
     <div className="rounded-2xl bg-panel/95 dark:bg-panel-dark/95 backdrop-blur-md border border-line dark:border-line-dark shadow-2xl p-4">
       <div className="flex items-start gap-3">
         <span className="w-7 h-7 rounded-full bg-accent text-white text-sm font-bold flex items-center justify-center flex-shrink-0">
-          {stepNumber}
+          <span key={stepNumber} className="hs-count-in">
+            {stepNumber}
+          </span>
         </span>
         <div className="min-w-0 flex-1">
           {step.label && (

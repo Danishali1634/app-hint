@@ -21,24 +21,113 @@
  * (OPFS). Spoken texts are cached in IndexedDB, so each text is generated once
  * — the video reuses what the player already spoke. Only the model is
  * downloaded — the step text never leaves the browser.
+ *
+ * HINDI VOICES (lang 'hi'): Roman-script Hinglish is converted to Devanagari
+ * first (services/text/hinglish), because they pronounce Devanagari; unfamiliar
+ * words are looked up online once and saved, unless Settings turned that off. Their
+ * models come from the upstream Piper repo (extraVoices.js). Their training
+ * data licences are NON-COMMERCIAL — fine for trying out, not for a paid product.
  */
 
 import { getMedia, putMedia } from '@/services/storage/db';
 import { getVoiceSettings } from '@/services/storage/settings';
+import { shapeForHindiSpeech, toDevanagariAsync } from '@/services/text/hinglish';
+import { matchSpeakerGender } from '@/services/text/speakerGender';
+import { languageForVoice } from '@/services/text/demoLines';
+import { registerExtraVoices } from './extraVoices';
 import { timeStretch } from './timeStretch';
 
 /** The default AI voice: clear, natural English; reads Hinglish (Latin script) well enough. */
 export const VIDEO_VOICE_ID = 'en_US-hfc_female-medium';
 
-/** The AI voices offered in Settings (Piper voice ids). */
+/**
+ * The AI voices offered in Settings (Piper voice ids). The user picks one; a
+ * Hindi voice is never switched to automatically.
+ *   lang     'en' reads text as written; 'hi' converts Hinglish to Devanagari first
+ *   gender   the narrator's: first-person Hindi forms are matched to it
+ *            ("main karunga" → "karungi" for a female voice; services/text/speakerGender).
+ *            Hindi genders were checked by measured pitch (Pratham ~103 Hz,
+ *            Priyamvada ~198 Hz) and Rohan's dataset ("Hindi Mono Male").
+ *   licence  shown in Settings when the voice can't be used in a paid product
+ */
 export const AI_VOICES = [
-  { id: VIDEO_VOICE_ID, name: 'Hannah', description: 'American English · female' },
-  { id: 'en_US-lessac-medium', name: 'Lily', description: 'American English · female, warm' },
-  { id: 'en_US-hfc_male-medium', name: 'Henry', description: 'American English · male' },
-  { id: 'en_US-ryan-medium', name: 'Ryan', description: 'American English · male, deep' },
-  { id: 'en_GB-jenny_dioco-medium', name: 'Jenny', description: 'British English · female' },
-  { id: 'en_GB-alan-medium', name: 'Alan', description: 'British English · male' },
+  {
+    id: VIDEO_VOICE_ID,
+    name: 'Hannah',
+    description: 'American English · female',
+    lang: 'en',
+    gender: 'female',
+  },
+  {
+    id: 'en_US-lessac-medium',
+    name: 'Lily',
+    description: 'American English · female, warm',
+    lang: 'en',
+    gender: 'female',
+  },
+  {
+    id: 'en_US-hfc_male-medium',
+    name: 'Henry',
+    description: 'American English · male',
+    lang: 'en',
+    gender: 'male',
+  },
+  {
+    id: 'en_US-ryan-medium',
+    name: 'Ryan',
+    description: 'American English · male, deep',
+    lang: 'en',
+    gender: 'male',
+  },
+  {
+    id: 'en_GB-jenny_dioco-medium',
+    name: 'Jenny',
+    description: 'British English · female',
+    lang: 'en',
+    gender: 'female',
+  },
+  {
+    id: 'en_GB-alan-medium',
+    name: 'Alan',
+    description: 'British English · male',
+    lang: 'en',
+    gender: 'male',
+  },
+  {
+    id: 'hi_IN-rohan-medium',
+    name: 'Rohan',
+    description: 'Hindi · male · reads Hinglish',
+    lang: 'hi',
+    gender: 'male',
+    licence: 'IIT Madras IndicTTS data licence',
+  },
+  {
+    id: 'hi_IN-pratham-medium',
+    name: 'Pratham',
+    description: 'Hindi · male · reads Hinglish',
+    lang: 'hi',
+    gender: 'male',
+    licence: 'CC BY-NC-SA 4.0, non-commercial',
+  },
+  {
+    id: 'hi_IN-priyamvada-medium',
+    name: 'Priyamvada',
+    description: 'Hindi · female · reads Hinglish',
+    lang: 'hi',
+    gender: 'female',
+    licence: 'CC BY-NC-SA 4.0, non-commercial',
+  },
 ];
+
+/** The narrator's gender for a voice id (default: the voice in Settings), or null. */
+export function aiVoiceGender(voiceId = aiVoiceFromSettings().voiceId) {
+  return AI_VOICES.find((v) => v.id === voiceId)?.gender ?? null;
+}
+
+/** True for voices that read Devanagari (Hinglish is converted for them). */
+export function isHindiVoice(voiceId) {
+  return AI_VOICES.some((v) => v.id === voiceId && v.lang === 'hi');
+}
 
 /** True if this browser can run the AI voice (WebAssembly + audio). */
 export function isAiVoiceSupported() {
@@ -51,10 +140,19 @@ export function isAiVoiceSupported() {
  * The AI voice + speed from Settings.
  * @returns {{ voiceId: string, rate: number }}
  */
+/**
+ * The language the narrator explains in: English for an English voice; for a
+ * Hindi voice, Hinglish or हिंदी as chosen (services/text/demoLines).
+ * @returns {'en' | 'hinglish' | 'hindi'}
+ */
+export function narrationLanguage(voiceId = aiVoiceFromSettings().voiceId) {
+  return languageForVoice(isHindiVoice(voiceId) ? 'hi' : 'en', getVoiceSettings().language);
+}
+
 export function aiVoiceFromSettings() {
-  const { aiVoiceId, rate } = getVoiceSettings();
+  const { aiVoiceId, rate, hinglishLookup } = getVoiceSettings();
   const known = AI_VOICES.some((v) => v.id === aiVoiceId);
-  return { voiceId: known ? aiVoiceId : VIDEO_VOICE_ID, rate };
+  return { voiceId: known ? aiVoiceId : VIDEO_VOICE_ID, rate, hinglishLookup };
 }
 
 // ─── Generating speech (Web Worker, one text at a time) ─────────────────────
@@ -132,6 +230,7 @@ function askWorker(text, voiceId, onDownload) {
 /** Same as the worker, on the page itself (only if workers can't load). */
 async function predictHere(text, voiceId, onDownload) {
   const tts = await import('@diffusionstudio/vits-web');
+  registerExtraVoices(tts);
   return tts.predict({ text, voiceId }, (progress) => {
     if (progress.total) onDownload?.(progress.loaded / progress.total);
   });
@@ -196,6 +295,15 @@ function readWav(buffer) {
   return null;
 }
 
+/** Silence before every clip (seconds) — see aiVoiceWav. */
+const LEAD_IN_SEC = 0.25;
+
+function withLeadIn(samples, sampleRate) {
+  const out = new Float32Array(Math.round(LEAD_IN_SEC * sampleRate) + samples.length);
+  out.set(samples, out.length - samples.length);
+  return out;
+}
+
 function writeWav(samples, sampleRate) {
   const view = new DataView(new ArrayBuffer(44 + samples.length * 2));
   const text = (at, s) => [...s].forEach((c, i) => view.setUint8(at + i, c.charCodeAt(0)));
@@ -253,7 +361,7 @@ const MAX_FINISHED = 200;
  * The AI voice speaking `text` — THE audio used by the player, the previews
  * and the video (so they sound the same).
  * @param {string} text
- * @param {{ voiceId?: string, rate?: number }} [voice]  default: Settings
+ * @param {{ voiceId?: string, rate?: number, hinglishLookup?: boolean }} [voice]  default: Settings
  * @param {(fraction: number) => void} [onDownload]
  * @returns {Promise<Blob>} audio/wav at the chosen speed
  */
@@ -261,16 +369,28 @@ export function aiVoiceWav(text, voice = {}, onDownload) {
   const settings = aiVoiceFromSettings();
   const voiceId = voice.voiceId ?? settings.voiceId;
   const rate = voice.rate ?? settings.rate;
-  const clean = text.trim();
-  const key = `${textKey(clean, voiceId)}@${rate}`;
+  const lookup = voice.hinglishLookup ?? settings.hinglishLookup;
+  // "main karunga" → "karungi" for a female voice (captions get the same fix in share.js).
+  const trimmed = matchSpeakerGender(text.trim(), aiVoiceGender(voiceId));
+  const key = `${textKey(trimmed, voiceId)}@${rate}${lookup ? '' : ':local'}`;
   let result = finished.get(key);
   if (!result) {
     result = (async () => {
-      const raw = await rawSpeech(clean, voiceId, onDownload);
-      if (Math.abs(rate - 1) < 0.01) return raw;
+      // Hindi voices: Hinglish → Devanagari (the spoken-text cache is keyed by the result).
+      // …then shaped for natural speech: pauses, "।", symbols as words (captions unchanged).
+      const spoken = isHindiVoice(voiceId)
+        ? shapeForHindiSpeech(await toDevanagariAsync(trimmed, { lookup }))
+        : trimmed;
+      const raw = await rawSpeech(spoken, voiceId, onDownload);
       const wav = readWav(await raw.arrayBuffer());
-      if (!wav) return raw; // unknown format: normal speed rather than nothing
-      return writeWav(timeStretch(wav.samples, wav.sampleRate, rate), wav.sampleRate);
+      if (!wav) return raw; // unknown format: as generated rather than nothing
+      // A short silent lead-in: an audio device waking from silence (Bluetooth,
+      // macOS power saving) swallows the first ~100–200 ms — that was the first
+      // word of some steps. Added before the time-stretch so it can't clip speech.
+      const padded = withLeadIn(wav.samples, wav.sampleRate);
+      const samples =
+        Math.abs(rate - 1) < 0.01 ? padded : timeStretch(padded, wav.sampleRate, rate);
+      return writeWav(samples, wav.sampleRate);
     })();
     result.catch(() => finished.delete(key)); // failures are retried next time
     finished.set(key, result);

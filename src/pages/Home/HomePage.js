@@ -129,7 +129,6 @@ export function HomePage() {
 
       {/* ── 12. Footer ── */}
       <SiteFooter />
-
     </div>
   );
 }

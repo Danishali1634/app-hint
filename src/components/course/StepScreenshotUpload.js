@@ -13,14 +13,23 @@
  * screenshots; the parent uses the first for this step and turns the others
  * into sub-steps with their own screen.
  *
+ * PRO (hooks/usePlan): screen recording and dropping several screenshots at
+ * once are Pro features with a few free tries. Out of tries → the upgrade
+ * dialog opens (several files: only the first one is used).
+ *
  * This component only hands Files back to the parent (onFile / onFiles);
  * validation and storage happen in CourseEditorPage.
  */
 
-import { useEffect, useState } from 'react';
-import { Upload, Copy, Images, PlayCircle } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Upload, Copy, Images, PlayCircle, Layers } from 'lucide-react';
 import { MiniHint } from '@/components/tutorial/MiniHint';
 import { Tooltip } from '@/components/ui/Tooltip';
+import { ProBadge } from '@/components/ui/ProBadge';
+import { usePlan } from '@/hooks/usePlan';
+
+const SECONDARY_BUTTON =
+  'flex items-center gap-2 px-4 py-2.5 rounded-xl border border-line dark:border-line-dark bg-panel/80 dark:bg-panel-dark/80 text-sm font-semibold text-ink dark:text-ink-soft-dark hover:border-accent/50 hover:shadow-premium transition-all';
 
 /**
  * @param {{
@@ -46,15 +55,20 @@ export function StepScreenshotUpload({
   onShowTutorial,
 }) {
   const [isDragOver, setIsDragOver] = useState(false);
-  const deliver = (files) => {
-    const images = files.filter((f) => f.type.startsWith('image/'));
-    if (!images.length) {
-      if (files[0]) (onFiles ? onFiles : (list) => onFile?.(list[0]))(files.slice(0, 1));
-      return;
-    }
-    if (onFiles) onFiles(images);
-    else onFile?.(images[0]);
-  };
+  const { triesLeft, tryFeature } = usePlan();
+
+  const deliver = useCallback(
+    (files) => {
+      const images = files.filter((f) => f.type.startsWith('image/'));
+      // Not an image: pass it on anyway so the parent shows its "wrong file" message.
+      const list = images.length ? images : files.slice(0, 1);
+      if (!onFiles) return onFile?.(list[0]);
+      // Several at once is Pro: out of free tries → just the first one.
+      if (list.length > 1 && !tryFeature('bulkUpload')) return onFiles(list.slice(0, 1));
+      onFiles(list);
+    },
+    [onFile, onFiles, tryFeature],
+  );
 
   // Paste support: active only while this upload area is on screen.
   useEffect(() => {
@@ -62,13 +76,12 @@ export function StepScreenshotUpload({
       const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
       if (files.length) {
         e.preventDefault();
-        if (onFiles) onFiles(files);
-        else onFile?.(files[0]);
+        deliver(files);
       }
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [onFile, onFiles]);
+  }, [deliver]);
 
   const pickFile = () => {
     const input = document.createElement('input');
@@ -86,6 +99,10 @@ export function StepScreenshotUpload({
     if (files.length) deliver(files);
   };
 
+  const record = () => {
+    if (tryFeature('screenRecording')) onRecord();
+  };
+
   return (
     <div
       onDragOver={(e) => {
@@ -94,22 +111,32 @@ export function StepScreenshotUpload({
       }}
       onDragLeave={() => setIsDragOver(false)}
       onDrop={handleDrop}
-      className={`flex flex-col items-center justify-center py-14 px-6 text-center border-2 border-dashed rounded-xl transition-colors ${
+      className={`relative overflow-hidden flex flex-col items-center justify-center py-14 px-6 text-center rounded-2xl border-2 border-dashed transition-all duration-200 ${
         isDragOver
-          ? 'border-accent bg-accent-soft/40 dark:bg-accent-soft-dark/20'
-          : 'border-line dark:border-line-dark'
+          ? 'border-accent bg-accent-soft/60 dark:bg-accent-soft-dark/30 shadow-glow scale-[1.01]'
+          : 'border-line dark:border-line-dark bg-gradient-to-b from-panel to-paper dark:from-panel-dark dark:to-paper-dark hover:border-accent/40'
       }`}
     >
-      <div className="mb-4">
+      {/* Soft brand glow behind the illustration */}
+      <div
+        className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 w-[28rem] h-56 rounded-full bg-gradient-to-r from-accent/15 to-violet/15 blur-3xl"
+        aria-hidden="true"
+      />
+
+      <div className="relative mb-4">
         <MiniHint variant="upload" />
       </div>
-      <p className="text-sm font-medium text-ink dark:text-ink-soft-dark mb-1">
-        Drop a screenshot here
+      <p className="relative text-base font-semibold tracking-tight text-ink dark:text-white mb-1">
+        {isDragOver ? 'Release to add it' : 'Drop a screenshot here'}
       </p>
-      <p className="text-xs text-ink-faint dark:text-ink-faint-dark mb-5 max-w-sm">
-        or paste it with Ctrl/⌘ + V
+      <p className="relative flex items-center justify-center gap-1.5 text-xs text-ink-faint dark:text-ink-faint-dark mb-6">
+        or paste it with
+        <kbd className="px-1.5 py-0.5 rounded-md border border-line dark:border-line-dark bg-panel dark:bg-panel-dark font-mono text-[10px] text-ink-soft dark:text-ink-soft-dark shadow-sm">
+          Ctrl/⌘ V
+        </kbd>
       </p>
-      <div className="flex flex-wrap items-center justify-center gap-2">
+
+      <div className="relative flex flex-wrap items-center justify-center gap-2.5">
         <Tooltip
           label={
             onFiles
@@ -119,53 +146,58 @@ export function StepScreenshotUpload({
         >
           <button
             onClick={pickFile}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white font-semibold hover:bg-accent-dark transition-colors"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent text-white font-semibold shadow-glow hover:bg-accent-dark hover:-translate-y-px transition-all"
           >
             <Upload className="w-4 h-4" /> Upload screenshot
           </button>
         </Tooltip>
-        {onShowTutorial && (
-          <Tooltip label="A short video that shows every click">
-            <button
-              onClick={onShowTutorial}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent/10 text-accent dark:text-accent-ink-dark ring-1 ring-accent/30 text-sm font-semibold hover:bg-accent/15 transition-colors"
-            >
-              <PlayCircle className="w-4 h-4" /> View tutorial: creating with screenshots
-            </button>
-          </Tooltip>
-        )}
         {onRecord && (
           <Tooltip label="Record your screen and add steps from the video">
-            <button
-              onClick={onRecord}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-line dark:border-line-dark text-sm font-semibold text-ink dark:text-ink-soft-dark hover:border-ink-faint dark:hover:border-ink-faint-dark transition-colors"
-            >
-              <span className="w-2.5 h-2.5 rounded-full bg-danger" aria-hidden="true" /> Record your
-              screen instead
+            <button onClick={record} className={SECONDARY_BUTTON}>
+              <span className="relative flex w-2.5 h-2.5" aria-hidden="true">
+                <span className="absolute inset-0 rounded-full bg-danger/60 animate-ping" />
+                <span className="relative w-2.5 h-2.5 rounded-full bg-danger" />
+              </span>
+              Record your screen instead
+              <ProBadge left={triesLeft('screenRecording')} />
             </button>
           </Tooltip>
         )}
         {onOpenGallery && galleryCount > 0 && (
           <Tooltip label="Reuse a screenshot you already added to this course">
-            <button
-              onClick={onOpenGallery}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-accent/50 text-sm font-semibold text-accent hover:bg-accent/10 transition-colors"
-            >
-              <Images className="w-4 h-4" /> Reuse ({galleryCount})
+            <button onClick={onOpenGallery} className={SECONDARY_BUTTON}>
+              <Images className="w-4 h-4 text-accent" /> Reuse ({galleryCount})
             </button>
           </Tooltip>
         )}
         {reuseFromStepNumber != null && (
           <Tooltip label={`Use the same screenshot as screen ${reuseFromStepNumber}`}>
-            <button
-              onClick={onReuse}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-line dark:border-line-dark text-sm font-medium text-ink-soft dark:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark transition-colors"
-            >
-              <Copy className="w-4 h-4" /> Same as screen {reuseFromStepNumber}
+            <button onClick={onReuse} className={SECONDARY_BUTTON}>
+              <Copy className="w-4 h-4 text-ink-faint dark:text-ink-faint-dark" /> Same as screen{' '}
+              {reuseFromStepNumber}
             </button>
           </Tooltip>
         )}
       </div>
+
+      {(onFiles || onShowTutorial) && (
+        <div className="relative mt-6 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-ink-faint dark:text-ink-faint-dark">
+          {onFiles && (
+            <span className="flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5" /> Drop several at once — one step each
+              <ProBadge left={triesLeft('bulkUpload')} />
+            </span>
+          )}
+          {onShowTutorial && (
+            <button
+              onClick={onShowTutorial}
+              className="flex items-center gap-1.5 font-medium text-accent dark:text-accent-ink-dark hover:underline"
+            >
+              <PlayCircle className="w-3.5 h-3.5" /> Watch how it works
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

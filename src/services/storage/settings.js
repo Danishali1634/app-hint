@@ -23,7 +23,7 @@ import { LS_AI_KEY, LS_THEME, LS_VOICE } from '@/constants';
 /** Used when LocalStorage is unavailable (blocked third-party iframe, privacy mode). */
 const memory = {};
 
-function readKey(key) {
+export function readKey(key) {
   try {
     return window.localStorage.getItem(key);
   } catch {
@@ -31,7 +31,7 @@ function readKey(key) {
   }
 }
 
-function writeKey(key, value) {
+export function writeKey(key, value) {
   memory[key] = value;
   try {
     if (value == null) window.localStorage.removeItem(key);
@@ -78,10 +78,12 @@ export function toggleTheme() {
 // ─── Text-to-speech voice ────────────────────────────────────────────────────
 
 /**
- * @typedef {{ voiceURI: string | null, rate: number, aiVoiceId: string | null }} VoiceSettings
+ * @typedef {{ voiceURI: string | null, rate: number, aiVoiceId: string | null, hinglishLookup: boolean, language: 'en' | 'hinglish' | 'hindi' | null }} VoiceSettings
  *   aiVoiceId  the AI voice (services/audio/neuralVoice AI_VOICES) used by the
  *              player AND the video; null = the default AI voice
  *   voiceURI   browser voice, only used when the AI voice can't load; null = best one
+ *   hinglishLookup  Hindi voices: look up unfamiliar Roman words online once (default on)
+ *   language   what the narrator explains in (services/text/demoLines); null = from the voice
  */
 
 /** @returns {VoiceSettings} */
@@ -92,9 +94,11 @@ export function getVoiceSettings() {
       voiceURI: typeof saved.voiceURI === 'string' ? saved.voiceURI : null,
       rate: typeof saved.rate === 'number' ? saved.rate : 1,
       aiVoiceId: typeof saved.aiVoiceId === 'string' ? saved.aiVoiceId : null,
+      hinglishLookup: typeof saved.hinglishLookup === 'boolean' ? saved.hinglishLookup : true,
+      language: ['en', 'hinglish', 'hindi'].includes(saved.language) ? saved.language : null,
     };
   } catch {
-    return { voiceURI: null, rate: 1, aiVoiceId: null };
+    return { voiceURI: null, rate: 1, aiVoiceId: null, hinglishLookup: true, language: null };
   }
 }
 

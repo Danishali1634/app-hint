@@ -8,7 +8,7 @@
  * so the video looks like the on-screen walkthrough.
  */
 
-import { WALKTHROUGH_TIMING as T } from '@/constants';
+import { pacedTiming, paceScale } from '@/utils/pace';
 import { clickOrigin, getStepTargets, isClickAction } from '@/utils/course';
 
 /** @typedef {import('@/types').WalkthroughStep} WalkthroughStep */
@@ -49,8 +49,21 @@ export function transitionFor(steps, i) {
   const step = steps[i];
   if (!prev || !prev.imageData || !step?.imageData) return 'enter';
   if (prev.imageData === step.imageData) return 'same';
-  // Sub-steps of one Global Step feel like ONE page; a new Global Step is a new page.
-  return prev.groupId && prev.groupId === step.groupId ? 'swap' : 'enter';
+  return samePage(prev, step) ? 'swap' : 'enter';
+}
+
+/**
+ * True when `to` shows the same page as `from` — the walkthrough then moves
+ * on as ONE continuous motion (camera glides, focus travels) instead of
+ * opening a new scene: the same screenshot, sub-steps of one Global Step, or
+ * another shot of the same screen (utils/samePage marks it `pageOf`).
+ * The player, the timeline and the video all decide with this.
+ */
+export function samePage(from, to) {
+  if (!from?.imageData || !to?.imageData) return false;
+  if (from.imageData === to.imageData) return true;
+  if (from.groupId && from.groupId === to.groupId) return true;
+  return !!to.pageOf && to.pageOf === from.id;
 }
 
 /** True if step i shows the same screenshot as step i-1 (camera glides, no cut). */
@@ -71,12 +84,16 @@ export function continuesScreen(steps, i) {
  *     (the previous screen's exit is drawn UNDER it, so there is no blank gap).
  * @param {WalkthroughStep[]} steps
  * @param {number[]} narrationMs  how long each step's narration lasts
- * @param {{ overview?: number, lookAction?: number }} [hold]  extra ms of stillness
- *   on the overview and after a "look" step — the downloaded video uses this to
- *   give the viewer more time (the live player's timeline passes nothing).
+ * @param {{ overview?: number, lookAction?: number, pace?: number, actionExtra?: number[] }} [hold]  extra ms of
+ *   stillness on the overview and after a "look" step — the downloaded video uses
+ *   this to give the viewer more time (the live player's timeline passes nothing);
+ *   pace: the course's pace (utils/pace), which stretches every timed phase;
+ *   actionExtra: per step, ms added to its action phase (the pause after a
+ *   spoken line when the pace is slow — utils/pace.afterVoicePauseMs).
  * @returns {{ segments: TimelineSegment[], total: number }}
  */
 export function buildTimeline(steps, narrationMs, hold = {}) {
+  const T = pacedTiming(hold.pace);
   const extraOverview = hold.overview ?? 0;
   const extraLook = hold.lookAction ?? 0;
   const segments = [];
@@ -108,9 +125,15 @@ export function buildTimeline(steps, narrationMs, hold = {}) {
     }
     add(i, 'narrate', narrationMs[i], null);
     // Click steps: one press per target (the pointer clicks them in order).
-    add(i, 'action', isClick ? T.clickAction * clickCount(step) : T.lookAction + extraLook, null);
+    add(
+      i,
+      'action',
+      (isClick ? T.clickAction * clickCount(step) : T.lookAction + extraLook) +
+        (hold.actionExtra?.[i] ?? 0),
+      null,
+    );
   });
-  add(steps.length - 1, 'done', END_HOLD_MS, null);
+  add(steps.length - 1, 'done', Math.round(END_HOLD_MS * paceScale(hold.pace)), null);
 
   return { segments, total: time };
 }
