@@ -6,6 +6,8 @@
  *                   cut parts striped (click → put back), the part being cut red
  *   VideoCutBar     "Cut a part" → drag the red handles → "Remove"
  *   QuickStepEditor Click / Look / Type + description, floating next to a new box
+ *   VideoSwitcher   the course's videos: pick one to
+ *                   watch, + Add video, × remove
  *   VideoStepList   the steps as a playlist: title first, drag to reorder live
  *   VideoStepPanel  Click / Look / Type + description of the step being edited,
  *                   "Next step on this picture" and "Done, back to video"
@@ -31,9 +33,11 @@ import {
   Scissors,
   X,
   GripVertical,
+  Upload,
 } from 'lucide-react';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { DescriptionField } from '@/components/course/DescriptionField';
+import { describeFixes, useTypingAutoFix } from '@/hooks/useTypingAutoFix';
 import { getStepAction, getStepTargets } from '@/utils/course';
 import { formatDuration } from '@/utils';
 import { keptDuration, MIN_CUT_SEC } from '@/services/video/cuts';
@@ -91,9 +95,10 @@ const stepsLabel = (items) =>
  *   text: string,
  *   tone?: 'info' | 'done' | 'problem' | 'busy',
  *   action?: import('react').ReactNode, // a small button on the right
+ *   shake?: boolean,                    // shake once on mount ("not yet"; remount to repeat)
  * }} props
  */
-export function GuideBar({ stage, text, tone = 'info', action = null }) {
+export function GuideBar({ stage, text, tone = 'info', action = null, shake = false }) {
   const toneClass = {
     info: 'border-accent/30 bg-accent-soft/70 dark:bg-accent-soft-dark/40 text-ink dark:text-ink-soft-dark',
     done: 'border-teal/30 bg-teal-soft dark:bg-teal-soft-dark text-ink dark:text-ink-soft-dark',
@@ -104,7 +109,9 @@ export function GuideBar({ stage, text, tone = 'info', action = null }) {
     <div
       role="status"
       aria-live="polite"
-      className={`flex items-center gap-3 px-3 py-2 rounded-xl border flex-shrink-0 min-h-[44px] ${toneClass}`}
+      className={`flex items-center gap-3 px-3 py-2 rounded-xl border flex-shrink-0 min-h-[44px] ${toneClass} ${
+        shake ? 'hs-shake' : ''
+      }`}
     >
       {stage && (
         <ol
@@ -157,6 +164,20 @@ export function BackToVideoButton({ onClick }) {
   );
 }
 
+/** Small "Remove" button for the GuideBar: drops a feature that has no box yet. */
+export function DiscardStepButton({ onClick }) {
+  return (
+    <Tooltip label="Remove this feature (it has no box yet)">
+      <button
+        onClick={onClick}
+        className="flex items-center gap-1 px-2 h-7 rounded-lg text-xs font-semibold text-danger hover:bg-danger/10 flex-shrink-0"
+      >
+        <Trash2 className="w-3.5 h-3.5" /> Remove
+      </button>
+    </Tooltip>
+  );
+}
+
 /** First few words of a description. */
 function firstWords(text, count = 8) {
   const words = (text || '').trim().split(/\s+/).filter(Boolean);
@@ -169,6 +190,7 @@ function firstWords(text, count = 8) {
  *   time: number,
  *   playing: boolean,
  *   steps: Step[],
+ *   videoId?: string,                  // only markers of steps from this video
  *   activeId: string | null,
  *   cuts?: VideoCut[],                 // removed parts (striped; click one to put it back)
  *   cutRange?: VideoCut | null,        // the part being chosen for cutting (red, two handles)
@@ -184,6 +206,7 @@ export function VideoControls({
   time,
   playing,
   steps,
+  videoId,
   activeId,
   cuts = [],
   cutRange = null,
@@ -273,27 +296,31 @@ export function VideoControls({
       <div className="flex-1 min-w-0">
         {/* One marker per picture (steps on the same picture share it) */}
         <div className="relative h-4">
-          {groupByPicture(steps).map((group) => {
-            const first = group.items[0].step;
-            const active = group.items.some((item) => item.step.id === activeId);
-            return (
-              <div
-                key={first.id}
-                className="absolute top-0 -translate-x-1/2"
-                style={{ left: `${pct(group.videoTime)}%` }}
-              >
-                <Tooltip label={`${stepsLabel(group.items)} · ${formatDuration(group.videoTime)}`}>
-                  <button
-                    onClick={() => onPickStep(first)}
-                    className={`w-2.5 h-3.5 rounded-sm transition-transform hover:scale-125 ${
-                      active ? 'bg-accent ring-2 ring-accent/30' : 'bg-accent/60 hover:bg-accent'
-                    }`}
-                    aria-label={`Go to ${stepsLabel(group.items).toLowerCase()}`}
-                  />
-                </Tooltip>
-              </div>
-            );
-          })}
+          {groupByPicture(steps)
+            .filter((group) => !videoId || group.items[0].step.videoId === videoId)
+            .map((group) => {
+              const first = group.items[0].step;
+              const active = group.items.some((item) => item.step.id === activeId);
+              return (
+                <div
+                  key={first.id}
+                  className="absolute top-0 -translate-x-1/2"
+                  style={{ left: `${pct(group.videoTime)}%` }}
+                >
+                  <Tooltip
+                    label={`${stepsLabel(group.items)} · ${formatDuration(group.videoTime)}`}
+                  >
+                    <button
+                      onClick={() => onPickStep(first)}
+                      className={`w-2.5 h-3.5 rounded-sm transition-transform hover:scale-125 ${
+                        active ? 'bg-accent ring-2 ring-accent/30' : 'bg-accent/60 hover:bg-accent'
+                      }`}
+                      aria-label={`Go to ${stepsLabel(group.items).toLowerCase()}`}
+                    />
+                  </Tooltip>
+                </div>
+              );
+            })}
         </div>
         {/* Scrubber */}
         <div
@@ -380,6 +407,99 @@ export function VideoControls({
 }
 
 /**
+ * The course's videos as a row of chips, above the player: the
+ * one being watched is highlighted; each shows its length and how many
+ * features come from it. Click to watch it, × to remove it (asks first),
+ * "+ Add video" opens "Upload more videos".
+ * @param {{
+ *   videos: import('@/types').CourseVideo[],
+ *   activeId: string,
+ *   steps: Step[],
+ *   disabled?: boolean,
+ *   onPick: (videoId: string) => void,
+ *   onAdd: () => void,
+ *   onRemove: (video: import('@/types').CourseVideo) => void,
+ * }} props
+ */
+export function VideoSwitcher({
+  videos,
+  activeId,
+  steps,
+  disabled = false,
+  onPick,
+  onAdd,
+  onRemove,
+}) {
+  return (
+    <div
+      className="flex items-center gap-1.5 overflow-x-auto pb-0.5 flex-shrink-0"
+      role="tablist"
+      aria-label="Your videos"
+    >
+      {videos.map((video, i) => {
+        const active = video.id === activeId;
+        const count = steps.filter((s) => s.videoId === video.id).length;
+        const name = `Video ${i + 1}`;
+        return (
+          <div
+            key={video.id}
+            className={`group flex items-center flex-shrink-0 rounded-xl border transition-colors ${
+              active
+                ? 'border-accent bg-accent-soft/70 dark:bg-accent-soft-dark/40'
+                : 'border-line dark:border-line-dark bg-panel dark:bg-panel-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark'
+            }`}
+          >
+            <Tooltip label={video.name ? `${name}: ${video.name}` : `Watch ${name.toLowerCase()}`}>
+              <button
+                role="tab"
+                aria-selected={active}
+                onClick={() => onPick(video.id)}
+                disabled={disabled && !active}
+                className="flex items-center gap-1.5 h-9 pl-3 pr-1.5 text-sm font-semibold text-ink dark:text-ink-soft-dark disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Film
+                  className={`w-4 h-4 ${active ? 'text-accent' : 'text-ink-faint dark:text-ink-faint-dark'}`}
+                />
+                {name}
+                {video.duration > 0 && (
+                  <span className="text-xs font-medium text-ink-faint dark:text-ink-faint-dark tabular-nums">
+                    {formatDuration(video.duration)}
+                  </span>
+                )}
+                {count > 0 && (
+                  <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-white text-[10px] font-bold leading-[18px] text-center tabular-nums">
+                    {count}
+                  </span>
+                )}
+              </button>
+            </Tooltip>
+            <Tooltip label={`Remove ${name.toLowerCase()} (its features stay)`}>
+              <button
+                onClick={() => onRemove(video)}
+                disabled={disabled}
+                className="w-7 h-7 mr-1 rounded-md flex items-center justify-center text-ink-faint dark:text-ink-faint-dark hover:text-danger hover:bg-danger/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-label={`Remove ${name.toLowerCase()}`}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </Tooltip>
+          </div>
+        );
+      })}
+      <Tooltip label="Record or upload more videos">
+        <button
+          onClick={onAdd}
+          disabled={disabled}
+          className="flex items-center gap-1.5 h-9 px-3 flex-shrink-0 rounded-xl border border-dashed border-line dark:border-line-dark text-sm font-semibold text-accent hover:bg-accent/10 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <Upload className="w-4 h-4" /> Add video
+        </button>
+      </Tooltip>
+    </div>
+  );
+}
+
+/**
  * Cutting the video in one go: "Cut a part" puts a red part on the scrubber
  * at the current moment; drag its two handles over what should go (the video
  * shows the frame under the handle), then "Remove this part". Parts already
@@ -453,6 +573,8 @@ export function VideoCutBar({
  * `boxEditor`): pick what the viewer does and write it, right there. It edits
  * the same step as the side panel, so both always show the same.
  *   Enter (in the text) or ✓ → done; Shift+Enter → new line; Esc → done.
+ * Spelling is fixed as you type, like the side panel (hooks/useTypingAutoFix);
+ * the last check still lands after the card closed.
  * @param {{
  *   step: Step,
  *   number: number,
@@ -463,6 +585,17 @@ export function VideoCutBar({
 export function QuickStepEditor({ step, number, onUpdate, onDone }) {
   const action = getStepAction(step);
   const textRef = useRef(null);
+  const autoFix = useTypingAutoFix({
+    value: step.text || '',
+    onChange: (text) => onUpdate({ text }),
+    textareaRef: textRef,
+    finishWhenGone: true,
+  });
+  /** Done: Google checks the text first (its fixes land even after the card closed). */
+  const finish = () => {
+    autoFix.onBlur();
+    onDone();
+  };
 
   // Ready to type right away (the pointer can stay where the box was drawn).
   useEffect(() => {
@@ -473,7 +606,7 @@ export function QuickStepEditor({ step, number, onUpdate, onDone }) {
     if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
       e.preventDefault();
       e.stopPropagation();
-      onDone();
+      finish();
     }
   };
 
@@ -514,7 +647,7 @@ export function QuickStepEditor({ step, number, onUpdate, onDone }) {
           type="text"
           value={step.typeValue || ''}
           onChange={(e) => onUpdate({ typeValue: e.target.value })}
-          placeholder="Text to type (optional)"
+          placeholder="Text to type (empty: types the description)"
           className="w-full px-2.5 py-1.5 rounded-lg bg-panel dark:bg-panel-dark border border-line dark:border-line-dark text-xs text-ink dark:text-ink-soft-dark outline-none focus:border-accent"
           aria-label={`Text typed in feature ${number}`}
         />
@@ -522,18 +655,31 @@ export function QuickStepEditor({ step, number, onUpdate, onDone }) {
       <textarea
         ref={textRef}
         value={step.text || ''}
-        onChange={(e) => onUpdate({ text: e.target.value })}
+        onChange={autoFix.onTextChange}
+        onBlur={autoFix.onBlur}
         rows={2}
         placeholder={DESCRIBE_PLACEHOLDER[action]}
         className="w-full resize-none px-2.5 py-2 rounded-lg bg-panel dark:bg-panel-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent"
         aria-label={`What the viewer does in feature ${number}`}
       />
+      {autoFix.lastFix && (
+        <p className="px-1 flex items-center gap-2 text-[11px] text-ink-faint dark:text-ink-faint-dark">
+          <span className="min-w-0 truncate">Auto-fixed {describeFixes(autoFix.lastFix)}</span>
+          <button
+            type="button"
+            onClick={autoFix.undoLastFix}
+            className="font-semibold text-accent hover:underline flex-shrink-0"
+          >
+            Undo
+          </button>
+        </p>
+      )}
       <div className="flex items-center gap-2">
         <span className="flex-1 text-[11px] text-ink-faint dark:text-ink-faint-dark">
           Enter to finish · draw another box for the next feature
         </span>
         <button
-          onClick={onDone}
+          onClick={finish}
           className="flex items-center gap-1 h-8 px-3 rounded-lg bg-accent text-white text-xs font-semibold hover:bg-accent-dark transition-colors"
         >
           <Check className="w-3.5 h-3.5" /> Done
@@ -552,12 +698,21 @@ export function QuickStepEditor({ step, number, onUpdate, onDone }) {
  *   steps: Step[],                    // in list order
  *   frameUrls: Record<string, string>, // imageId → object URL
  *   activeId: string | null,
+ *   timeLabel?: (step: Step) => string, // e.g. "Video 2 · " before the time
  *   onOpen: (step: Step) => void,
  *   onDelete: (step: Step) => void,
  *   onMove: (from: number, to: number) => void,  // drag & drop, positions in `steps`
  * }} props
  */
-export function VideoStepList({ steps, frameUrls, activeId, onOpen, onDelete, onMove }) {
+export function VideoStepList({
+  steps,
+  frameUrls,
+  activeId,
+  timeLabel = () => '',
+  onOpen,
+  onDelete,
+  onMove,
+}) {
   const byId = new Map(steps.map((step) => [step.id, step]));
   const { order, draggingId, rowProps } = useSortableList({
     ids: steps.map((step) => step.id),
@@ -647,7 +802,8 @@ export function VideoStepList({ steps, frameUrls, activeId, onOpen, onDelete, on
                   >
                     {title || 'No title yet'}
                   </span>
-                  <span className="block text-xs text-ink-faint dark:text-ink-faint-dark tabular-nums">
+                  <span className="block text-xs text-ink-faint dark:text-ink-faint-dark tabular-nums truncate">
+                    {timeLabel(step)}
                     {formatDuration(step.videoTime)}
                   </span>
                 </span>
@@ -680,19 +836,29 @@ export function VideoStepList({ steps, frameUrls, activeId, onOpen, onDelete, on
  * @param {{
  *   step: Step,
  *   number: number,
+ *   timeLabel?: string,            // e.g. "Video 2 · " before the time
  *   pageName?: string,
  *   onUpdate: (patch: Partial<Step>) => void,
  *   onNextOnPicture: () => void,   // a new step on this same picture
  *   onDone: () => void,
  * }} props
  */
-export function VideoStepPanel({ step, number, pageName, onUpdate, onNextOnPicture, onDone }) {
+export function VideoStepPanel({
+  step,
+  number,
+  timeLabel = '',
+  pageName,
+  onUpdate,
+  onNextOnPicture,
+  onDone,
+}) {
   const action = getStepAction(step);
   return (
     <div className="p-3 space-y-3 border-b border-line dark:border-line-dark">
       <p className="text-sm font-semibold text-ink dark:text-ink-soft-dark">
         Feature {number}{' '}
         <span className="text-xs font-medium text-ink-faint dark:text-ink-faint-dark tabular-nums">
+          {timeLabel}
           {formatDuration(step.videoTime)}
         </span>
       </p>
@@ -719,7 +885,7 @@ export function VideoStepPanel({ step, number, pageName, onUpdate, onNextOnPictu
           type="text"
           value={step.typeValue || ''}
           onChange={(e) => onUpdate({ typeValue: e.target.value })}
-          placeholder="Text to type (optional)"
+          placeholder="Text to type (empty: types the description)"
           className="w-full px-2.5 py-1.5 rounded-lg bg-panel dark:bg-panel-dark border border-line dark:border-line-dark text-xs text-ink dark:text-ink-soft-dark outline-none focus:border-accent"
           aria-label={`Text typed in feature ${number}`}
         />

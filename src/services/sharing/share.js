@@ -50,7 +50,7 @@ import LZString from 'lz-string';
 import { getMediaAsDataUrl } from '@/services/storage/db';
 import { compressImageDataUrl } from '@/utils';
 import { compressVoiceForLink } from '@/services/audio/linkAudio';
-import { getStepAction, getStepImageId } from '@/utils/course';
+import { getStepAction, getStepImageId, getTypedValue } from '@/utils/course';
 import { aiVoiceGender, narrationLanguage } from '@/services/audio/neuralVoice';
 import { typeStepLine } from '@/services/text/demoLines';
 import { matchSpeakerGender } from '@/services/text/speakerGender';
@@ -150,6 +150,8 @@ export function expandTargetDescriptions(steps) {
 }
 
 /**
+ * TYPED TEXT: a 'type' step types its "Text to type", else its description
+ * (getTypedValue), so the author's own text appears at the box.
  * NARRATOR: a 'type' step with no description says what is typed, in the
  * narrator's language (demoLines.typeStepLine).
  * NARRATOR GENDER: steps the AI voice reads (no recording) get their
@@ -162,6 +164,9 @@ function matchNarrator(steps) {
   const gender = aiVoiceGender();
   const language = narrationLanguage();
   return steps.map((step) => {
+    // 'type' steps type the author's text at the box (utils/course.getTypedValue),
+    // worked out from the description as written, before it is adapted below.
+    if (step.action === 'type') step = { ...step, typeValue: getTypedValue(step) };
     if (step.audioData) return step;
     // A 'type' step with nothing written still says what is typed (never silent).
     const text =

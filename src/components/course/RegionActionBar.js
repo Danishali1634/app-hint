@@ -52,7 +52,7 @@ function TypeValueInput({ value, onChange, compact = false }) {
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="e.g. 12345 or john@example.com — empty shows a typing animation"
+        placeholder="e.g. 12345 or john@example.com — empty types the description"
         className="w-full px-3 py-2 rounded-lg bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent transition-colors"
       />
     </label>

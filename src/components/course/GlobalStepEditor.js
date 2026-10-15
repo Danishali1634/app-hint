@@ -675,7 +675,7 @@ function QuickBoxCard({ step, number, onUpdate, onDone }) {
             type="text"
             value={step.typeValue || ''}
             onChange={(e) => onUpdate({ typeValue: e.target.value })}
-            placeholder="Text to type (optional)"
+            placeholder="Text to type (empty: types the description)"
             className="mt-1.5 w-full px-2.5 py-1.5 rounded-lg bg-panel dark:bg-panel-dark border border-line dark:border-line-dark text-xs text-ink dark:text-ink-soft-dark outline-none focus:border-accent"
           />
         )}
@@ -972,7 +972,7 @@ function SubStepCard({
               type="text"
               value={step.typeValue || ''}
               onChange={(e) => onUpdate({ typeValue: e.target.value })}
-              placeholder="Text to type (optional)"
+              placeholder="Text to type (empty: types the description)"
               className="w-full px-2.5 py-1.5 rounded-lg bg-panel dark:bg-panel-dark border border-line dark:border-line-dark text-xs text-ink dark:text-ink-soft-dark outline-none focus:border-accent"
               aria-label={`Text typed in feature ${number}`}
             />

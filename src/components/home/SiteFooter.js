@@ -82,7 +82,7 @@ export function SiteFooter() {
 
         {/* Bottom bar */}
         <div className="mt-12 pt-6 border-t border-line dark:border-line-dark flex flex-col sm:flex-row gap-2 sm:items-center justify-between text-xs text-ink-faint dark:text-ink-faint-dark">
-          <p>© {year} Hint Studio</p>
+          <p>© {year} Hint Studio · Created by Danish Akhtar</p>
           <p>Zoom in. Show the click. Explain every step.</p>
         </div>
       </div>

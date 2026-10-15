@@ -47,7 +47,7 @@ import {
   STORE_MEDIA,
 } from '@/constants';
 import { blobToDataUrl, nextId } from '@/utils';
-import { collectMediaIds } from '@/utils/course';
+import { collectMediaIds, getCourseVideos, videosPatch } from '@/utils/course';
 import { normalizeTitle } from '@/utils/search';
 
 const DAY_MS = 86_400_000;
@@ -227,6 +227,7 @@ export async function deleteCourse(id) {
     // the pictures of an unsaved video draft — nothing is left behind.
     const ids = new Set(collectMediaIds(course));
     if (course.sourceVideoId) ids.add(course.sourceVideoId);
+    for (const video of getCourseVideos(course)) ids.add(video.id);
     for (const step of course.videoDraftSteps || []) if (step.imageId) ids.add(step.imageId);
     for (const mediaId of ids) {
       await db.delete(STORE_MEDIA, mediaId);
@@ -290,7 +291,14 @@ export async function duplicateCourse(courseId) {
 
   /** old media id → new media id (missing Blobs keep their old id, as before) */
   const idMap = new Map();
-  for (const oldId of collectMediaIds(original)) {
+  const videos = getCourseVideos(original);
+  const draft = original.videoDraftSteps || [];
+  const owned = new Set([
+    ...collectMediaIds(original),
+    ...videos.map((video) => video.id),
+    ...draft.map((step) => step.imageId).filter(Boolean),
+  ]);
+  for (const oldId of owned) {
     const blob = await getMedia(oldId);
     if (!blob) continue;
     const newId = nextId('media');
@@ -299,12 +307,14 @@ export async function duplicateCourse(courseId) {
   }
   const remap = (mediaId) => (mediaId ? (idMap.get(mediaId) ?? mediaId) : null);
 
-  const newSteps = original.steps.map((step) => ({
+  const copyStep = (step) => ({
     ...step,
     id: nextId('step'),
     imageId: remap(step.imageId),
     audioId: remap(step.audioId),
-  }));
+    ...(step.videoId ? { videoId: remap(step.videoId) } : {}),
+  });
+  const newSteps = original.steps.map(copyStep);
 
   const copy = {
     ...original,
@@ -313,6 +323,12 @@ export async function duplicateCourse(courseId) {
     status: 'draft',
     baseImageId: remap(original.baseImageId),
     ...(original.gallery ? { gallery: original.gallery.map(remap) } : {}),
+    // The recordings and an unsaved video draft are copied too, so the copy's
+    // video builder still opens (and deleting the original can't break it).
+    ...(videos.length
+      ? videosPatch(videos.map((video) => ({ ...video, id: remap(video.id) })))
+      : {}),
+    ...(original.videoDraftSteps ? { videoDraftSteps: draft.map(copyStep) } : {}),
     steps: newSteps,
     createdAt: Date.now(),
     updatedAt: Date.now(),

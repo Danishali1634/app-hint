@@ -76,9 +76,21 @@
  *                                      are sub-steps (Area 1, 2 …) of one main step on the same
  *                                      screenshot. Missing/null = a normal single step.
  *                                      Editor-only; playback treats them as normal steps.
- * @property {number} [videoTime]       "Create by video": seconds into course.sourceVideoId
+ * @property {number} [videoTime]       "Create by video": seconds into its video (`videoId`)
  *                                      where this step's screenshot was taken. Steps are
  *                                      ordered by it there; playback ignores it.
+ * @property {string} [videoId]         "Create by video": the course video (CourseVideo.id) the
+ *                                      screenshot was taken from. Missing on older steps →
+ *                                      the course's first video.
+ */
+
+/**
+ * One recording of a "Create by video" course (course.videos).
+ * @typedef {Object} CourseVideo
+ * @property {string} id                    Media id of the video Blob
+ * @property {string} [name]                File name, or '' for a screen recording
+ * @property {number | null} [duration]     Measured length, seconds (WebM files often report none)
+ * @property {{ start: number, end: number }[] | null} [cuts]  Parts cut away (services/video/cuts)
  */
 
 /**
@@ -98,8 +110,11 @@
  *                                          reusable by any step (kept even when unused;
  *                                          utils/course.getCourseScreens)
  * @property {'screenshots' | 'video'} [source]  How the course was started (missing = screenshots)
- * @property {string | null} [sourceVideoId]  "Create by video": the recording (media store) the
- *                                          steps' screenshots are taken from (pages/VideoTour)
+ * @property {CourseVideo[]} [videos]       "Create by video": every recording, in order; steps
+ *                                          can come from any of them (utils/course.getCourseVideos).
+ *                                          Missing on older courses → the single sourceVideoId
+ * @property {string | null} [sourceVideoId]  "Create by video": the first recording (media store);
+ *                                          older courses: the only one (pages/VideoTour)
  * @property {number | null} [sourceVideoDuration]  Measured recording length, seconds (fallback
  *                                          when the WebM file reports no duration)
  * @property {{ start: number, end: number }[] | null} [videoCuts]  "Create by video": parts of

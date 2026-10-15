@@ -294,6 +294,30 @@
   }
 }
 
+/* "Not yet": a short sideways shake (e.g. leaving a feature that has no box). */
+@keyframes hs-shake {
+  0%,
+  100% {
+    transform: none;
+  }
+  20%,
+  60% {
+    transform: translateX(-6px);
+  }
+  40%,
+  80% {
+    transform: translateX(6px);
+  }
+}
+.hs-shake {
+  animation: hs-shake 360ms ease-in-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hs-shake {
+    animation: none;
+  }
+}
+
 /* Highlight ring around the feature. */
 .hs-ring-pulse {
   animation: highlight-pulse 1.6s ease-in-out infinite;

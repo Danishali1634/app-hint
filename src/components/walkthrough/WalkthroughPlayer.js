@@ -66,8 +66,9 @@
  *     camera and pointer glide from one area to the next without any cut.
  *
  * HOST CONTROL (editor preview studio): onIndexChange reports the frame,
- * onPlayingChange reports play/pause, requestedIndex jumps to a frame,
- * pauseRequest pauses it, hideControls hides the bottom bar.
+ * onPlayingChange reports play/pause, requestedIndex jumps to a frame (with
+ * `play`: plays that step from its start — "Play this step"), pauseRequest
+ * pauses it, hideControls hides the bottom bar.
  *
  * WEB / MOBILE VIEW (switch in the top bar, remembered in this browser):
  *   Web     the caption shows the whole description (as always).
@@ -148,7 +149,8 @@ const COMPACT_ICON_BUTTON_CLASS_DARK =
  *   embedded?: boolean,   // inside an iframe: no exit button, Esc does nothing
  *   variant?: 'fullscreen' | 'inline',
  *   onIndexChange?: (index: number) => void,          // e.g. the preview filmstrip
- *   requestedIndex?: { index: number, nonce: number } | null, // jump there (new nonce = new request)
+ *   requestedIndex?: { index: number, nonce: number, play?: boolean } | null, // jump there (new nonce =
+ *                                                       new request); play: start that step from its beginning
  *   onPlayingChange?: (playing: boolean) => void,       // e.g. open the editor when paused
  *   onInsertStep?: (position: number) => void,          // edit mode: "+" on the timeline boundaries
  *   pauseRequest?: number,                              // a new non-zero value pauses (e.g. "Edit" pressed)
@@ -368,7 +370,11 @@ export function WalkthroughPlayer({
     if (!requestedIndex || handledJumpRef.current === requestedIndex.nonce) return;
     if (!steps[requestedIndex.index]) return; // not built yet — retry when steps change
     handledJumpRef.current = requestedIndex.nonce;
-    if (requestedIndex.index !== index) goTo(requestedIndex.index);
+    if (requestedIndex.play) {
+      // "Play this step": from its start, even when it is the one on screen.
+      goTo(requestedIndex.index);
+      startPlayback();
+    } else if (requestedIndex.index !== index) goTo(requestedIndex.index);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedIndex?.nonce, steps]);
 

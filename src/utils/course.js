@@ -48,6 +48,26 @@ export function isClickAction(step) {
   return getStepAction(step) === 'click';
 }
 
+/** Text in quotes inside a description: “admin”, "1234", ‘Ravi’. */
+const QUOTED = /[“"‘]([^”"’\n]{1,80})[”"’]/;
+
+/**
+ * What a 'type' step types into its box in the walkthrough (player and video):
+ *   1. the "Text to type" the author entered (step.typeValue),
+ *   2. else the part of the description in quotes: Type “admin” here → admin,
+ *   3. else the description itself, so the author's own text is typed out
+ *      at the box instead of an anonymous typing animation.
+ * Empty only when the step has neither (then the animation stays).
+ * @param {{ typeValue?: string, text?: string }} step
+ * @returns {string}
+ */
+export function getTypedValue(step) {
+  const value = step.typeValue?.trim();
+  if (value) return value;
+  const text = step.text?.trim() || '';
+  return text.match(QUOTED)?.[1].trim() || text;
+}
+
 /**
  * Every media id a course references (screenshots + recordings), de-duplicated.
  * Used when deleting, duplicating or exporting a course.
@@ -91,6 +111,42 @@ export function getCourseScreens(course) {
  */
 export function isMediaInUse(course, mediaId) {
   return collectMediaIds(course).includes(mediaId);
+}
+
+/**
+ * MULTIPLE VIDEOS ("Create by video"): a course can hold several recordings
+ * (`course.videos`, in order) and take features from any of them; a step's
+ * `videoId` names the one its picture came from. Courses saved before this
+ * have one `sourceVideoId` (+ `sourceVideoDuration`, `videoCuts`): read as a
+ * list of one, so nothing has to be migrated up front.
+ * @param {Course} course
+ * @returns {import('@/types').CourseVideo[]}
+ */
+export function getCourseVideos(course) {
+  if (Array.isArray(course?.videos)) return course.videos;
+  if (!course?.sourceVideoId) return [];
+  return [
+    {
+      id: course.sourceVideoId,
+      name: '',
+      duration: course.sourceVideoDuration ?? null,
+      cuts: course.videoCuts ?? null,
+    },
+  ];
+}
+
+/**
+ * The course fields that store this list of videos. `sourceVideoId` stays the
+ * first video, for code that only asks "does this course have a video?".
+ * @param {import('@/types').CourseVideo[]} videos
+ */
+export function videosPatch(videos) {
+  return {
+    videos,
+    sourceVideoId: videos[0]?.id ?? null,
+    sourceVideoDuration: null,
+    videoCuts: null,
+  };
 }
 
 /**
@@ -296,4 +352,17 @@ export function renumberDefaultLabels(inputSteps) {
     const wanted = formatStepNumber(numbers[i]);
     return isDefault && label !== wanted ? { ...step, label: wanted } : step;
   });
+}
+
+/**
+ * A course saved from the preview studio, with its groups made consistent again
+ * (a step dragged out of its run of sub-steps becomes a step of its own) and
+ * default labels renumbered. Unchanged groups → the same course object.
+ * @param {Course} course
+ * @param {() => string} makeGroupId
+ * @returns {Course}
+ */
+export function tidyStepGroups(course, makeGroupId) {
+  const steps = normalizeStepGroups(course, makeGroupId);
+  return steps === course.steps ? course : { ...course, steps: renumberDefaultLabels(steps) };
 }

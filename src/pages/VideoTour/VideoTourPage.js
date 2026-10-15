@@ -24,6 +24,13 @@
  *   - A guided tour (components/tutorial/GuidedTour) explains the page the
  *     first time, and again from the "?" button.
  *
+ * A BOX IS REQUIRED: a feature can't be left without a box (target). Going
+ *   back to the video, opening another feature, "Next feature on this
+ *   picture" or "Upload more videos" stop there: the GuideBar shakes and says
+ *   "Feature N needs a box", with a Remove button to drop it instead. The
+ *   description stays optional. So Save never finds a feature without a box
+ *   at the end of a long recording.
+ *
  * DRAFT vs SAVE: work in progress is autosaved (debounced) to
  * `course.videoDraftSteps`, so a refresh loses nothing, but `course.steps` is
  * only written by "Save walkthrough", the one explicit finish action. Save puts
@@ -48,7 +55,17 @@
  *   (services/video/cuts). Non-destructive: the ranges are saved on
  *   `course.videoCuts`, the player skips them, seeking into one lands after it,
  *   and each can be restored. Features inside a new cut are removed with it
- *   (after a confirm). Replacing the video clears the cuts.
+ *   (after a confirm). Each video has its own cuts (`CourseVideo.cuts`).
+ *
+ * MORE VIDEOS: "Upload more videos" (top bar, or #/video/:id?add=1 from the
+ *   editor) records or uploads further videos (GetVideo as a dialog, several
+ *   files at once). They are listed above the player (VideoSwitcher); pick one
+ *   to watch it and add features from it. Every step remembers its video
+ *   (`step.videoId`), so opening it switches to that video at that moment.
+ *   Cuts belong to one video. A new step goes in at its moment within its
+ *   video, after the steps of earlier videos; drag to reorder as usual.
+ *   Removing a video keeps its features (their pictures are stored); with no
+ *   video left, phase A opens again (the old "Replace video").
  *
  * LENGTH: the walkthrough is made from the captured frames plus their
  * descriptions, not from the video itself, so it ends at the last step and its
@@ -61,9 +78,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Plus, HelpCircle, RefreshCw, Save, PlayCircle } from 'lucide-react';
+import { ArrowLeft, Plus, HelpCircle, Upload, Save, PlayCircle, Loader2 } from 'lucide-react';
 import { getCourse, saveCourse, putMedia, getMedia, deleteMedia } from '@/services/storage/db';
 import { resolveVideoDuration } from '@/services/video/screenRecorder';
+import { captureFrame } from '@/services/video/captureFrame';
 import { addCut, cutAt, normalizeCuts, reachesEnd, snapOutOfCuts } from '@/services/video/cuts';
 import { TargetCanvas } from '@/components/course/TargetCanvas';
 import { GuidedTour } from '@/components/tutorial/GuidedTour';
@@ -78,22 +96,26 @@ import { useMediaUrls } from '@/hooks/useMediaUrls';
 import { nextId } from '@/utils';
 import {
   collectMediaIds,
+  getCourseVideos,
   getStepTargets,
   isMediaInUse,
   normalizeStepGroups,
   renumberDefaultLabels,
   targetTexts,
+  videosPatch,
   withTargets,
 } from '@/utils/course';
 import { GetVideo } from './GetVideo';
 import {
   BackToVideoButton,
+  DiscardStepButton,
   GuideBar,
   VideoControls,
   VideoCutBar,
   QuickStepEditor,
   VideoStepList,
   VideoStepPanel,
+  VideoSwitcher,
 } from './VideoTourParts';
 
 /** @typedef {import('@/types').Course} Course */
@@ -103,7 +125,6 @@ const AUTOSAVE_DELAY_MS = 800;
 const TOUR_DONE_KEY = 'hs-video-tour-done';
 /** The editor's first-visit tour; marked done so it doesn't cover the "ready" dialog. */
 const EDITOR_TOUR_DONE_KEY = 'hs-editor-tour-done';
-const FRAME_QUALITY = 0.92;
 /** Length of the red part "Cut a part" starts with, seconds. */
 const DEFAULT_CUT_SEC = 3;
 
@@ -115,6 +136,11 @@ const TOUR_STEPS = [
   },
   { target: 'add-step', title: 'Add a feature here', text: 'It takes a picture of this moment.' },
   { target: 'steps', title: 'Your features', text: 'Click one to change it.' },
+  {
+    target: 'add-video',
+    title: 'More videos',
+    text: 'Add more recordings and take features from any of them.',
+  },
   {
     target: 'save',
     title: 'Save once at the end',
@@ -128,17 +154,34 @@ const ICON_BUTTON_CLASS =
 const hasVideoTime = (step) => typeof step.videoTime === 'number';
 
 /**
- * Puts a new step in at its moment in the video: right after the last step at
- * the same moment (same picture), else before the first step later in the
- * video, else at the end. Steps the author dragged elsewhere stay where they are.
+ * Puts a new step in at its moment in its video: right after the last step at
+ * the same moment of the same video (same picture), else before the first step
+ * that comes later (a later moment of this video, or a later video), else at
+ * the end. Steps the author dragged elsewhere stay where they are.
+ * @param {Step[]} steps
+ * @param {Step} step
+ * @param {string[]} videoIds  the course's videos, in order
  */
-function insertByTime(steps, step) {
-  let at = steps.findLastIndex((s) => s.videoTime === step.videoTime) + 1;
+function insertByTime(steps, step, videoIds) {
+  const order = (s) => videoIds.indexOf(s.videoId);
+  let at =
+    steps.findLastIndex((s) => s.videoId === step.videoId && s.videoTime === step.videoTime) + 1;
   if (at === 0) {
-    at = steps.findIndex((s) => s.videoTime > step.videoTime);
+    at = steps.findIndex(
+      (s) =>
+        hasVideoTime(s) &&
+        (order(s) > order(step) || (s.videoId === step.videoId && s.videoTime > step.videoTime)),
+    );
     if (at < 0) at = steps.length;
   }
   return [...steps.slice(0, at), step, ...steps.slice(at)];
+}
+
+/** Steps saved before multiple videos have no videoId: they belong to the first video. */
+function withVideoIds(steps, course) {
+  const firstId = getCourseVideos(course)[0]?.id;
+  if (!firstId) return steps;
+  return steps.map((s) => (hasVideoTime(s) && !s.videoId ? { ...s, videoId: firstId } : s));
 }
 
 /** Draft steps, in list order, labelled Step 1, 2, 3 … */
@@ -159,26 +202,6 @@ function writeTourDone(key = TOUR_DONE_KEY) {
   }
 }
 
-/** The current video frame as a JPEG Blob (natural size). */
-function captureFrame(video) {
-  return new Promise((resolve, reject) => {
-    const { videoWidth: w, videoHeight: h } = video;
-    if (!w || !h) {
-      reject(new Error('Video not ready'));
-      return;
-    }
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    canvas.getContext('2d').drawImage(video, 0, 0, w, h);
-    canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error('Capture failed'))),
-      'image/jpeg',
-      FRAME_QUALITY,
-    );
-  });
-}
-
 export function VideoTourPage() {
   const { courseId } = useParams();
   const navigate = useNavigate();
@@ -194,6 +217,8 @@ export function VideoTourPage() {
   const location = useLocation();
   // The course NewCoursePage just created (read once).
   const [justCreated] = useState(location.state?.course);
+  // Opened from the editor's "Upload more videos" (#/video/:id?add=1): open that dialog (read once).
+  const [openAddVideos] = useState(() => new URLSearchParams(location.search).has('add'));
 
   useEffect(() => {
     let cancelled = false;
@@ -220,7 +245,9 @@ export function VideoTourPage() {
         return;
       }
       courseRef.current = found;
-      stepsRef.current = tidy(found.videoDraftSteps ?? found.steps.filter(hasVideoTime));
+      stepsRef.current = tidy(
+        withVideoIds(found.videoDraftSteps ?? found.steps.filter(hasVideoTime), found),
+      );
       setSteps(stepsRef.current);
       setCourse(found);
     }
@@ -270,17 +297,54 @@ export function VideoTourPage() {
     [saveDraft],
   );
 
+  /**
+   * Stores new videos after the course's others (in the order given).
+   * @returns {Promise<string[]>} their ids
+   */
+  const addVideos = useCallback(
+    async (list) => {
+      const added = [];
+      try {
+        for (const { blob, durationSec, name } of list) {
+          const id = nextId('media');
+          await putMedia(id, blob);
+          added.push({ id, name: name || '', duration: durationSec || null, cuts: null });
+        }
+        await updateCourse(videosPatch([...getCourseVideos(courseRef.current), ...added]));
+      } catch (error) {
+        // All or nothing: no half-added videos left eating storage.
+        added.forEach((video) => deleteMedia(video.id));
+        throw error;
+      }
+      return added.map((video) => video.id);
+    },
+    [updateCourse],
+  );
+
+  /** Changes one video's entry (cuts, measured length). */
+  const updateVideo = useCallback(
+    (videoId, patch) =>
+      updateCourse(
+        videosPatch(
+          getCourseVideos(courseRef.current).map((v) =>
+            v.id === videoId ? { ...v, ...patch } : v,
+          ),
+        ),
+      ),
+    [updateCourse],
+  );
+
   if (!course) return <PageSpinner />;
 
-  if (!course.sourceVideoId) {
+  const videos = getCourseVideos(course);
+  if (!videos.length) {
     return (
       <GetVideo
         title={course.title}
         onUseScreenshots={() => navigate(`/editor/${course.id}`)}
-        onVideo={async ({ blob, durationSec }) => {
-          const id = nextId('media');
-          await putMedia(id, blob);
-          await updateCourse({ sourceVideoId: id, sourceVideoDuration: durationSec || null });
+        onVideos={async (list) => {
+          await addVideos(list);
+          if (list.length > 1) toast.success(`${list.length} videos added`);
         }}
       />
     );
@@ -289,16 +353,22 @@ export function VideoTourPage() {
   return (
     <TourBuilder
       course={course}
+      videos={videos}
+      openAddVideos={openAddVideos}
       courseRef={courseRef}
       steps={steps}
       changeSteps={changeSteps}
       stepsRef={stepsRef}
       saveDraft={saveDraft}
-      onChangeCuts={(videoCuts) => updateCourse({ videoCuts })}
-      onReplaceVideo={async () => {
-        const old = courseRef.current.sourceVideoId;
-        await updateCourse({ sourceVideoId: null, sourceVideoDuration: null, videoCuts: null });
-        if (old) deleteMedia(old);
+      onChangeCuts={(videoId, cuts) => updateVideo(videoId, { cuts })}
+      onVideoDuration={(videoId, duration) => updateVideo(videoId, { duration })}
+      onAddVideos={addVideos}
+      onRemoveVideo={async (videoId) => {
+        // Its features stay: each keeps its own picture.
+        await updateCourse(
+          videosPatch(getCourseVideos(courseRef.current).filter((v) => v.id !== videoId)),
+        );
+        deleteMedia(videoId);
       }}
       onSave={async () => {
         finishedRef.current = true;
@@ -339,7 +409,11 @@ async function saveWalkthrough(course, draft) {
   delete next.videoDraftSteps;
   next.steps = normalizeStepGroups({ ...next, steps }, () => nextId('group'));
 
-  const keep = new Set([...collectMediaIds(next), next.sourceVideoId]);
+  const keep = new Set([
+    ...collectMediaIds(next),
+    next.sourceVideoId,
+    ...getCourseVideos(next).map((video) => video.id),
+  ]);
   const before = [
     ...collectMediaIds(course),
     ...(course.videoDraftSteps || []).map((step) => step.imageId),
@@ -353,29 +427,45 @@ async function saveWalkthrough(course, draft) {
  * Phase B: video + highlight tool + steps list.
  * @param {{
  *   course: Course,
+ *   videos: import('@/types').CourseVideo[],   // at least one
+ *   openAddVideos?: boolean,                   // open "Upload more videos" right away
  *   courseRef: { current: Course },
  *   steps: Step[],
  *   stepsRef: { current: Step[] },
  *   changeSteps: (update: Step[] | ((prev: Step[]) => Step[])) => void,
  *   saveDraft: (draft: Step[]) => Promise<void>,
- *   onChangeCuts: (cuts: import('@/services/video/cuts').VideoCut[]) => Promise<void>,
- *   onReplaceVideo: () => Promise<void>,
+ *   onChangeCuts: (videoId: string, cuts: import('@/services/video/cuts').VideoCut[]) => Promise<void>,
+ *   onVideoDuration: (videoId: string, seconds: number) => Promise<void>,
+ *   onAddVideos: (videos: import('./GetVideo').NewVideo[]) => Promise<string[]>,
+ *   onRemoveVideo: (videoId: string) => Promise<void>,
  *   onSave: () => Promise<void>,
  * }} props
  */
 function TourBuilder({
   course,
+  videos,
+  openAddVideos = false,
   courseRef,
   steps,
   stepsRef,
   changeSteps,
   saveDraft,
   onChangeCuts,
-  onReplaceVideo,
+  onVideoDuration,
+  onAddVideos,
+  onRemoveVideo,
   onSave,
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const videoRef = useRef(null);
+  const [activeVideoId, setActiveVideoId] = useState(() => videos[0].id);
+  // The video being watched (the first one again if it was removed).
+  const activeVideo = videos.find((v) => v.id === activeVideoId) || videos[0];
+  const videoIds = videos.map((v) => v.id);
+  const pendingSeekRef = useRef(null); // where to go once the next video has loaded
+  const [addOpen, setAddOpen] = useState(openAddVideos);
+  const [confirmRemove, setConfirmRemove] = useState(null); // the video to remove, awaiting OK
   const resolvingRef = useRef(false); // finding a WebM's real duration (ignore time updates)
   const [videoUrl, setVideoUrl] = useState(null);
   const [ready, setReady] = useState(false);
@@ -386,32 +476,46 @@ function TourBuilder({
   const [hoveredId, setHoveredId] = useState(null);
   const [tourOpen, setTourOpen] = useState(false);
   const [lessonId, setLessonId] = useState(null); // a recording lesson open in TutorialDialog
-  const [confirmReplace, setConfirmReplace] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problemId, setProblemId] = useState(null); // step that blocked Save (no box)
+  const [blockCount, setBlockCount] = useState(0); // times leaving a box-less feature was refused
   const [cutRange, setCutRange] = useState(null); // { start, end } being chosen for cutting
   const [quickEditId, setQuickEditId] = useState(null); // step whose floating card is open
   const [confirmCut, setConfirmCut] = useState(null); // { cuts, inside: Step[] } awaiting OK
 
-  // The recording as an object URL.
+  // "?add=1" did its job: drop it, so a refresh doesn't open the dialog again.
+  useEffect(() => {
+    if (openAddVideos) navigate(location.pathname, { replace: true });
+    // Once, on open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The video being watched, as an object URL. Switching videos starts clean.
   useEffect(() => {
     let url = null;
     let cancelled = false;
     setReady(false);
-    getMedia(course.sourceVideoId).then((blob) => {
-      if (cancelled) return;
-      if (!blob) {
-        toast.error("The video couldn't be found. Please add it again.");
-        return;
-      }
-      url = URL.createObjectURL(blob);
-      setVideoUrl(url);
-    });
+    setPlaying(false);
+    setVideoUrl(null);
+    setDuration(0);
+    setTime(0);
+    setCutRange(null);
+    getMedia(activeVideo.id)
+      .then((blob) => {
+        if (cancelled) return;
+        if (!blob) {
+          toast.error("The video couldn't be found. Please add it again.");
+          return;
+        }
+        url = URL.createObjectURL(blob);
+        setVideoUrl(url);
+      })
+      .catch(() => !cancelled && toast.error("Couldn't open the video. Please try again."));
     return () => {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [course.sourceVideoId]);
+  }, [activeVideo.id]);
 
   const imageIds = useMemo(
     () => [...new Set(steps.map((s) => s.imageId).filter(Boolean))],
@@ -424,9 +528,16 @@ function TourBuilder({
   const targets = editing ? getStepTargets(editing) : [];
   const readyCount = steps.filter((s) => getStepTargets(s).length > 0).length;
   const cuts = useMemo(
-    () => normalizeCuts(course.videoCuts, duration),
-    [course.videoCuts, duration],
+    () => normalizeCuts(activeVideo.cuts, duration),
+    [activeVideo.cuts, duration],
   );
+  const videoNumber = (videoId) => videoIds.indexOf(videoId) + 1; // 0 = removed video
+  /** "Video 2 · " before a time, only when there are several videos. */
+  const videoLabel = (step) => {
+    if (videos.length < 2 && videoNumber(step.videoId)) return '';
+    const n = videoNumber(step.videoId);
+    return n ? `Video ${n} · ` : 'Removed video · ';
+  };
   const cutsRef = useRef(cuts);
   cutsRef.current = cuts;
 
@@ -492,7 +603,7 @@ function TourBuilder({
         setCutRange(null);
         return;
       }
-      if (e.code !== 'Space' || editingId || tourOpen) return;
+      if (e.code !== 'Space' || editingId || tourOpen || addOpen || confirmRemove) return;
       const el = e.target;
       if (el?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
       e.preventDefault();
@@ -500,19 +611,78 @@ function TourBuilder({
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [editingId, tourOpen, togglePlay, cutRange]);
+  }, [editingId, tourOpen, togglePlay, cutRange, addOpen, confirmRemove]);
 
   const handleMetadata = async () => {
     const video = videoRef.current;
+    if (!video) return;
+    const { id, duration: known, cuts: savedCuts } = activeVideo;
     resolvingRef.current = true;
-    const real = await resolveVideoDuration(video, course.sourceVideoDuration || 0);
+    const real = await resolveVideoDuration(video, known || 0);
     resolvingRef.current = false;
+    // Switched to another video meanwhile: that one loads by itself.
+    if (videoRef.current !== video) return;
     setDuration(real);
-    // Start on the first moment that isn't cut.
-    const start = snapOutOfCuts(normalizeCuts(course.videoCuts, real), 0, real);
+    if (!known && real > 0) onVideoDuration(id, real);
+    // Start where a feature of this video was opened, else on the first moment that isn't cut.
+    const wanted = pendingSeekRef.current ?? 0;
+    pendingSeekRef.current = null;
+    const start = snapOutOfCuts(
+      normalizeCuts(savedCuts, real),
+      Math.min(real || wanted, Math.max(0, wanted)),
+      real,
+    );
     video.currentTime = start;
     setTime(start);
     setReady(true);
+  };
+
+  /** Show this moment of this video (switching to it first if needed). */
+  const goTo = (videoId, seconds) => {
+    if (!videoIds.includes(videoId)) return; // its video was removed
+    if (videoId !== activeVideo.id) {
+      pendingSeekRef.current = seconds;
+      setActiveVideoId(videoId);
+    } else if (ready) seek(seconds);
+    else pendingSeekRef.current = seconds;
+  };
+
+  /** Watch another video (from the list above the player). */
+  const switchVideo = (videoId) => {
+    if (videoId === activeVideo.id) return;
+    pause();
+    pendingSeekRef.current = null;
+    setActiveVideoId(videoId);
+  };
+
+  /** "Upload more videos": stored, then the first new one opens, ready to add features. */
+  const addVideos = async (list) => {
+    const ids = await onAddVideos(list);
+    setAddOpen(false);
+    setEditingId(null);
+    pause();
+    pendingSeekRef.current = null;
+    if (ids.length) setActiveVideoId(ids[0]);
+    toast.success(
+      list.length > 1
+        ? `${list.length} videos added. Now showing the first of them`
+        : 'Video added. Pause it and add features',
+    );
+  };
+
+  const removeVideo = async (video) => {
+    setConfirmRemove(null);
+    pause();
+    if (editing?.videoId === video.id) setEditingId(null);
+    if (video.id === activeVideo.id) {
+      const next = videos.find((v) => v.id !== video.id);
+      if (next) setActiveVideoId(next.id);
+    }
+    try {
+      await onRemoveVideo(video.id);
+    } catch {
+      toast.error("Couldn't remove the video. Please try again.");
+    }
   };
 
   /** Pause, take a picture of this moment and open it as a new step. */
@@ -522,15 +692,20 @@ function TourBuilder({
     video.pause();
     setBusy(true);
     try {
-      const videoTime = Math.round(video.currentTime * 1000) / 1000;
-      // A step at exactly this moment already has the picture: share it.
-      let imageId = steps.find((s) => s.videoTime === videoTime && s.imageId)?.imageId;
+      const source = {
+        videoId: activeVideo.id,
+        videoTime: Math.round(video.currentTime * 1000) / 1000,
+      };
+      // A step at exactly this moment of this video already has the picture: share it.
+      let imageId = steps.find(
+        (s) => s.videoId === source.videoId && s.videoTime === source.videoTime && s.imageId,
+      )?.imageId;
       if (!imageId) {
         const blob = await captureFrame(video);
         imageId = nextId('media');
         await putMedia(imageId, blob);
       }
-      createStep(imageId, videoTime);
+      createStep(imageId, source);
     } catch {
       toast.error("Couldn't take a picture of the video. Try again.");
     } finally {
@@ -538,8 +713,12 @@ function TourBuilder({
     }
   };
 
-  /** A new step on this picture, opened in the highlight tool (optionally with its first box). */
-  const createStep = (imageId, videoTime, region = null) => {
+  /**
+   * A new step on this picture, opened in the highlight tool (optionally with its first box).
+   * @param {string} imageId
+   * @param {{ videoId?: string, videoTime: number }} source  where in which video it was taken
+   */
+  const createStep = (imageId, { videoId, videoTime }, region = null) => {
     const prev = stepsRef.current;
     const step = {
       id: nextId('step'),
@@ -550,9 +729,10 @@ function TourBuilder({
       action: 'click',
       audioId: null,
       videoTime,
+      ...(videoId ? { videoId } : {}),
       ...(region ? withTargets([region]) : {}),
     };
-    changeSteps(insertByTime(prev, step));
+    changeSteps(insertByTime(prev, step, videoIds));
     const cameFrom = editingId;
     setEditingId(step.id);
     // A box drawn on a picture that already has one adds a feature by itself, so
@@ -573,20 +753,46 @@ function TourBuilder({
     return step.id;
   };
 
+  /**
+   * A box is required: true (and the GuideBar shakes with "needs a box") when
+   * the feature being edited has none yet, so the caller stays on it.
+   */
+  const missingBox = () => {
+    if (!editing || getStepTargets(editing).length > 0) return false;
+    setProblemId(editing.id);
+    setBlockCount((n) => n + 1);
+    return true;
+  };
+
   /** "Next step on this picture": same frame, same moment, a separate step. */
   const addStepOnSamePicture = () => {
-    if (editing) createStep(editing.imageId, editing.videoTime);
+    if (editing && !missingBox()) createStep(editing.imageId, editing);
   };
 
   const openStep = (step) => {
+    if (step.id !== editingId && missingBox()) return;
     pause();
-    seek(step.videoTime);
+    goTo(step.videoId, step.videoTime);
     setEditingId(step.id);
   };
 
   const backToVideo = () => {
-    if (editing) seek(editing.videoTime);
+    if (missingBox()) return;
+    if (editing) goTo(editing.videoId, editing.videoTime);
     setEditingId(null);
+  };
+
+  /** Another feature on the same picture (TargetCanvas numbers). */
+  const selectSubStep = (id) => {
+    if (id !== editingId && missingBox()) return;
+    setEditingId(id);
+  };
+
+  /** "Upload more videos" (the dialog opens the new video, so the feature is left). */
+  const showAddVideos = () => {
+    if (missingBox()) return;
+    pause();
+    setAddOpen(true);
   };
 
   const updateStep = (id, patch) =>
@@ -644,16 +850,19 @@ function TourBuilder({
       toast.error('That would cut the whole video. Keep at least a moment of it.');
       return;
     }
-    const inside = stepsRef.current.filter((s) => cutAt(next, s.videoTime));
+    const inside = stepsRef.current.filter(
+      (s) => s.videoId === activeVideo.id && cutAt(next, s.videoTime),
+    );
     if (inside.length) setConfirmCut({ cuts: next, inside });
     else commitCut(next);
   };
 
   const commitCut = async (next, inside = []) => {
+    const videoId = activeVideo.id;
     setCutRange(null);
     setConfirmCut(null);
     if (inside.length) await deleteSteps(inside);
-    await onChangeCuts(next);
+    await onChangeCuts(videoId, next);
     const video = videoRef.current;
     const t = snapOutOfCuts(next, video?.currentTime ?? time, duration);
     if (video) video.currentTime = t;
@@ -665,12 +874,16 @@ function TourBuilder({
         <UndoToast
           message="Part cut from the video"
           closeToast={closeToast}
-          onUndo={() => onChangeCuts(cuts)}
+          onUndo={() => onChangeCuts(videoId, cuts)}
         />
       ));
   };
 
-  const restoreCut = (index) => onChangeCuts(cuts.filter((_, i) => i !== index));
+  const restoreCut = (index) =>
+    onChangeCuts(
+      activeVideo.id,
+      cuts.filter((_, i) => i !== index),
+    );
 
   // ── Highlights of the step being edited (as in GlobalStepEditor) ──
   const setTargets = (list) => updateStep(editing.id, withTargets(list));
@@ -682,7 +895,7 @@ function TourBuilder({
       setTargets([...targets, region]);
       if (editing && targets.length === 0) setQuickEditId(editing.id);
     } else {
-      setQuickEditId(createStep(editing.imageId, editing.videoTime, region));
+      setQuickEditId(createStep(editing.imageId, editing, region));
     }
   };
   const changeTarget = (index, region) => {
@@ -721,15 +934,25 @@ function TourBuilder({
   const back = <BackToVideoButton onClick={backToVideo} />;
   let guide;
   if (editing && targets.length === 0) {
+    const discard = <DiscardStepButton onClick={() => deleteStep(editing)} />;
     guide =
       problemId === editing.id
         ? {
             stage: 3,
             tone: 'problem',
             text: `Feature ${editingNumber} needs a box. Drag a box over what the viewer should click`,
-            action: back,
+            action: discard,
           }
-        : { stage: 3, text: 'Drag a box over what the viewer should click', action: back };
+        : {
+            stage: 3,
+            text: 'Drag a box over what the viewer should click',
+            action: (
+              <span className="flex items-center gap-1">
+                {discard}
+                {back}
+              </span>
+            ),
+          };
   } else if (editing && !editing.text?.trim()) {
     guide = { stage: 4, text: 'Write what the viewer should do' };
   } else if (editing) {
@@ -813,10 +1036,15 @@ function TourBuilder({
             <span className="hidden sm:inline">Watch how</span>
           </button>
         </Tooltip>
-        <Tooltip label="Record or upload a different video">
-          <button onClick={() => setConfirmReplace(true)} className={ICON_BUTTON_CLASS}>
-            <RefreshCw className="w-4 h-4" />
-            <span className="hidden sm:inline">Replace video</span>
+        <Tooltip label="Record or upload more videos, and add features from any of them">
+          <button
+            data-tour="add-video"
+            onClick={showAddVideos}
+            disabled={busy}
+            className={`${ICON_BUTTON_CLASS} disabled:opacity-50`}
+          >
+            <Upload className="w-4 h-4" />
+            <span className="hidden sm:inline">Upload more videos</span>
           </button>
         </Tooltip>
         <Tooltip
@@ -838,7 +1066,11 @@ function TourBuilder({
       <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-3">
         {/* ── Main area: video, or the highlight tool for the step being edited ── */}
         <div className="flex-1 min-w-0 min-h-0 flex flex-col gap-2">
-          <GuideBar {...guide} />
+          <GuideBar
+            key={`guide-${blockCount}`}
+            {...guide}
+            shake={blockCount > 0 && guide.tone === 'problem'}
+          />
           {editing && (
             <div className="flex-1 min-h-0">
               <TargetCanvas
@@ -855,7 +1087,7 @@ function TourBuilder({
                 replacingIndex={null}
                 onAddTarget={addTarget}
                 onChangeTarget={changeTarget}
-                onSelectSubStep={setEditingId}
+                onSelectSubStep={selectSubStep}
                 focusKey={editing.id}
                 highlightId={hoveredId}
                 onHoverSubStep={setHoveredId}
@@ -877,12 +1109,30 @@ function TourBuilder({
 
           {/* The video stays mounted while editing, so it keeps its place. */}
           <div className={editing ? 'hidden' : 'flex flex-col gap-2 lg:flex-1 lg:min-h-0'}>
+            <VideoSwitcher
+              videos={videos}
+              activeId={activeVideo.id}
+              steps={steps}
+              disabled={busy || !!cutRange}
+              onPick={switchVideo}
+              onAdd={showAddVideos}
+              onRemove={(video) => {
+                pause();
+                setConfirmRemove(video);
+              }}
+            />
             <div
               data-tour="video"
               className="relative aspect-video lg:aspect-auto lg:flex-1 lg:min-h-0 rounded-2xl overflow-hidden bg-black flex items-center justify-center"
             >
+              {!videoUrl && (
+                <p className="flex items-center gap-2 text-sm font-semibold text-white/80">
+                  <Loader2 className="w-5 h-5 animate-spin" /> Opening video…
+                </p>
+              )}
               {videoUrl && (
                 <video
+                  key={activeVideo.id}
                   ref={videoRef}
                   src={videoUrl}
                   className="max-w-full max-h-full w-full h-full object-contain"
@@ -931,6 +1181,7 @@ function TourBuilder({
               time={time}
               playing={playing}
               steps={steps}
+              videoId={activeVideo.id}
               activeId={editingId}
               cuts={cuts}
               cutRange={cutRange}
@@ -965,6 +1216,7 @@ function TourBuilder({
                 key={editing.id}
                 step={editing}
                 number={editingNumber}
+                timeLabel={videoLabel(editing)}
                 pageName={course.pageName}
                 onUpdate={(patch) => updateStep(editing.id, patch)}
                 onNextOnPicture={addStepOnSamePicture}
@@ -984,6 +1236,7 @@ function TourBuilder({
             steps={steps}
             frameUrls={frameUrls}
             activeId={editingId}
+            timeLabel={videoLabel}
             onOpen={openStep}
             onDelete={deleteStep}
             onMove={moveStep}
@@ -993,17 +1246,26 @@ function TourBuilder({
 
       <GuidedTour steps={TOUR_STEPS} open={tourOpen} onClose={closeTour} />
       {lessonId && <TutorialDialog initialId={lessonId} onClose={() => setLessonId(null)} />}
+      {addOpen && (
+        <GetVideo
+          variant="dialog"
+          title={course.title}
+          onVideos={addVideos}
+          onClose={() => setAddOpen(false)}
+        />
+      )}
       <ConfirmDialog
-        open={confirmReplace}
-        title="Replace the video?"
-        message="Your features stay. The old video is removed."
-        confirmLabel="Replace"
-        onConfirm={() => {
-          setConfirmReplace(false);
-          setEditingId(null);
-          onReplaceVideo();
-        }}
-        onCancel={() => setConfirmReplace(false)}
+        open={!!confirmRemove}
+        title={`Remove video ${confirmRemove ? videoNumber(confirmRemove.id) : ''}?`}
+        message={
+          videos.length > 1
+            ? 'Its features stay, with their pictures. Only the video is removed.'
+            : 'Your features stay, with their pictures. You can record or upload another video next.'
+        }
+        confirmLabel="Remove video"
+        danger
+        onConfirm={() => removeVideo(confirmRemove)}
+        onCancel={() => setConfirmRemove(null)}
       />
       <ConfirmDialog
         open={!!confirmCut}

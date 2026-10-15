@@ -5,7 +5,9 @@
  *   ✓ Fix spelling — "kre" → kare, "dikai" → dikhai, "prablomatic" → problematic
  *                (services/text/fixText); "Undo" restores the previous text.
  *   Auto-fix   — the same fixes, applied to each word as you finish typing it
- *                (on by default, remembered; "Undo" next to the last fix).
+ *                (on by default, remembered; "Undo" next to the last fix), then
+ *                Google's English spell checker when the typing pauses
+ *                ("pleas clik" → please click; hooks/useTypingAutoFix).
  *   Convert    — the whole text to Hinglish, English or हिंदी (services/text/translate).
  *   ✨ Improve  — AI rewrite (if an Anthropic key is set in Settings) or an
  *                offline tidy-up; one-click "Undo" restores the previous text.
@@ -26,13 +28,14 @@ import {
   Wand2,
 } from 'lucide-react';
 import { improveWithClaude, polishText } from '@/services/text/enhance';
-import { fixSpelling, fixTypedWord } from '@/services/text/fixText';
+import { fixSpelling } from '@/services/text/fixText';
 import { convertTextTo } from '@/services/text/translate';
 import { canSpeakText, previewSpeech, stopPreviewSpeech } from '@/services/audio/tts';
 import { narrationLanguage } from '@/services/audio/neuralVoice';
 import { getAiKey, readKey, writeKey } from '@/services/storage/settings';
-import { LS_AUTOFIX, LS_DICTATION_LANG } from '@/constants';
+import { LS_DICTATION_LANG } from '@/constants';
 import { DICTATION_LANGS, useDictation } from '@/hooks/useDictation';
+import { describeFixes, useTypingAutoFix } from '@/hooks/useTypingAutoFix';
 import { toast } from 'react-toastify';
 import { Tooltip } from '@/components/ui/Tooltip';
 
@@ -44,8 +47,6 @@ const CONVERT_TARGETS = [
   { id: 'english', label: 'English', hint: 'Translate to English' },
   { id: 'hindi', label: 'हिंदी', hint: 'Hindi script — what Hindi voices read best' },
 ];
-/** A word ends when one of these is typed after it. */
-const WORD_END = /[\s.,!?;:।)]/;
 
 /** Last voice-typing language, or the narrator's language. */
 function initialDictationLang() {
@@ -80,55 +81,22 @@ export function DescriptionField({
   grow = false,
   placeholder = 'What should the viewer do here?',
 }) {
+  // eslint-disable-next-line no-unused-vars -- Improve is switched off for now (see below)
   const [improving, setImproving] = useState(false);
   const [previous, setPrevious] = useState(null); // for Undo
   const [listening, setListening] = useState(false);
   const [fixing, setFixing] = useState(false);
   const [dictationLang, setDictationLang] = useState(initialDictationLang);
   const [converting, setConverting] = useState(null); // target id | null
-  const [autoFix, setAutoFix] = useState(() => readKey(LS_AUTOFIX) !== '0');
-  const [lastFix, setLastFix] = useState(null); // { from, to, start } — for its Undo
   const textarea = useRef(null);
+  const { autoFix, toggleAutoFix, onTextChange, onBlur, lastFix, undoLastFix, clearLastFix } =
+    useTypingAutoFix({ value, onChange, textareaRef: textarea });
 
   useEffect(() => stopPreviewSpeech, []);
 
   // Voice typing appends each finished phrase to the CURRENT text.
   const valueRef = useRef(value);
   valueRef.current = value;
-
-  /** Replaces `from` at `start` with `to` if it is still there, keeping the caret in place. */
-  const replaceAt = (start, from, to) => {
-    const current = valueRef.current;
-    if (current.slice(start, start + from.length) !== from) return false;
-    const el = textarea.current;
-    const caret = el && document.activeElement === el ? el.selectionStart : null;
-    onChange(current.slice(0, start) + to + current.slice(start + from.length));
-    if (caret != null) {
-      const moved = caret > start ? caret + to.length - from.length : caret;
-      requestAnimationFrame(() => el.setSelectionRange(moved, moved));
-    }
-    return true;
-  };
-
-  /** Auto-fix: the word just finished by a space or punctuation. */
-  const fixFinishedWord = async (text, caret) => {
-    if (caret < 2 || !WORD_END.test(text[caret - 1])) return;
-    const before = text.slice(0, caret - 1);
-    const word = before.match(/[A-Za-z]+$/)?.[0];
-    if (!word) return;
-    const start = before.length - word.length;
-    const sentence = before.slice(Math.max(0, before.search(/[^.!?।\n]*$/)));
-    const to = await fixTypedWord(word, sentence).catch(() => null);
-    if (to && replaceAt(start, word, to)) setLastFix({ from: word, to, start });
-  };
-
-  const toggleAutoFix = () => {
-    setAutoFix((on) => {
-      writeKey(LS_AUTOFIX, on ? '0' : '1');
-      return !on;
-    });
-    setLastFix(null);
-  };
 
   const convert = async (target) => {
     if (!value.trim() || converting) return;
@@ -139,7 +107,7 @@ export function DescriptionField({
       if (converted.trim() === value.trim()) toast(`Already in ${name}`);
       else {
         setPrevious(value);
-        setLastFix(null);
+        clearLastFix();
         onChange(converted);
       }
     } catch (error) {
@@ -188,6 +156,7 @@ export function DescriptionField({
     }
   };
 
+  // eslint-disable-next-line no-unused-vars -- Improve is switched off for now (see below)
   const improve = async () => {
     const text = value.trim();
     if (!text) {
@@ -231,25 +200,20 @@ export function DescriptionField({
         id={id}
         value={value}
         onChange={(e) => {
-          const text = e.target.value;
-          const typedOne = text.length === value.length + 1;
           setPrevious(null);
-          onChange(text);
-          if (autoFix && typedOne) fixFinishedWord(text, e.target.selectionStart);
+          onTextChange(e);
         }}
+        onBlur={onBlur}
         placeholder={placeholder}
         rows={rows}
         className={`${grow ? 'flex-1 min-h-[6rem] ' : ''}w-full px-3 py-2.5 rounded-xl bg-paper-2 dark:bg-paper-2-dark border border-line dark:border-line-dark text-sm text-ink dark:text-ink-soft-dark outline-none focus:border-accent transition-colors resize-none`}
       />
       {lastFix && (
         <p className="mt-1 px-1 flex items-center gap-2 text-[11px] text-ink-faint dark:text-ink-faint-dark">
-          Auto-fixed “{lastFix.from}” → “{lastFix.to}”
+          Auto-fixed {describeFixes(lastFix)}
           <button
             type="button"
-            onClick={() => {
-              replaceAt(lastFix.start, lastFix.to, lastFix.from);
-              setLastFix(null);
-            }}
+            onClick={undoLastFix}
             className="font-semibold text-accent hover:underline"
           >
             Undo
@@ -301,7 +265,7 @@ export function DescriptionField({
         <Tooltip
           label={
             autoFix
-              ? 'Auto-fix is on: words are corrected as you type (kre → kare, dikai → dikhai)'
+              ? 'Auto-fix is on: words are corrected as you type (kre → kare, clik → click)'
               : 'Auto-fix is off'
           }
         >

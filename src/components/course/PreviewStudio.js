@@ -11,6 +11,16 @@
  *                    jumps to that exact moment). "+" buttons on the timeline
  *                    insert a step before step 1, between any two, or at the end.
  *                    While it plays the panel just says "Pause to edit".
+ *                    Beside the player: the steps (StudioStepList) — click one
+ *                    to edit it, ▶ to play from it, drag to reorder, 🗑 delete.
+ *                    The panel's ▶ Play replays the step being edited, so a
+ *                    change is checked right where it was made.
+ *                    A step made from a video can take another moment of it
+ *                    ("Change moment"); steps on the same picture move with it.
+ *
+ * OPENED FROM: the editor ("Preview and edit") and the course's watch page
+ * (#/preview/:id, "Edit here" / a step's ✎), which can start in Edit mode on a
+ * given step (startInEdit, initialStepId).
  *
  * DRAFT, NOT AUTOSAVE
  *   Everything here edits a copy of the course. "Save" writes it (onSave →
@@ -24,16 +34,22 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X, Check, Pencil, PauseCircle } from 'lucide-react';
-import { deleteMedia } from '@/services/storage/db';
+import { deleteMedia, putMedia } from '@/services/storage/db';
 import { buildWalkthroughSteps } from '@/services/sharing/share';
 import { MAX_STEPS } from '@/constants';
 import { nextId } from '@/utils';
-import { collectMediaIds, getStepImageId, renumberDefaultLabels } from '@/utils/course';
+import {
+  collectMediaIds,
+  getCourseVideos,
+  getStepImageId,
+  renumberDefaultLabels,
+} from '@/utils/course';
 import { WalkthroughPlayer } from '@/components/walkthrough/WalkthroughPlayer';
 import { formatTime, stepTimings } from '@/components/walkthrough/Timeline';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Spinner } from '@/components/ui/Spinner';
 import { StepEditPanel } from '@/components/course/StepEditPanel';
+import { StudioStepList } from '@/components/course/StudioStepList';
 import { toast } from 'react-toastify';
 
 /** @typedef {import('@/types').Course} Course */
@@ -60,18 +76,27 @@ function newStep(number) {
  *   course: Course,
  *   onSave: (course: Course) => void,
  *   onClose: (selectedStepId?: string) => void,
+ *   startInEdit?: boolean,     // open in Edit mode (panel open, paused)
+ *   initialStepId?: string,    // the step to show first
  * }} props
  */
-export function PreviewStudio({ course, onSave, onClose }) {
+export function PreviewStudio({ course, onSave, onClose, startInEdit = false, initialStepId }) {
   const [saved, setSaved] = useState(course); // last saved version
   const [draft, setDraft] = useState(course);
   const [walkSteps, setWalkSteps] = useState(null);
-  const [current, setCurrent] = useState(0); // frame showing in the player
+  const firstIndex = Math.max(
+    0,
+    course.steps.findIndex((s) => s.id === initialStepId),
+  );
+  const [current, setCurrent] = useState(firstIndex); // frame showing in the player
   const [playing, setPlaying] = useState(false);
-  const [editMode, setEditMode] = useState(false);
+  const [editMode, setEditMode] = useState(startInEdit);
   const [panelHidden, setPanelHidden] = useState(false); // closed with ✕ until the next pause
   const [pauseRequest, setPauseRequest] = useState(0);
-  const [jump, setJump] = useState(null); // { index, nonce } → player
+  // { index, nonce, play? } → player
+  const [jump, setJump] = useState(() =>
+    firstIndex > 0 ? { index: firstIndex, nonce: Date.now() } : null,
+  );
   const [justSaved, setJustSaved] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const createdMedia = useRef(new Set()); // Blobs written since the last save
@@ -147,6 +172,60 @@ export function PreviewStudio({ course, onSave, onClose }) {
     jumpTo(position);
   };
 
+  /** Click in the step list: edit that step (paused, panel open). */
+  const selectStep = (index) => {
+    setEditMode(true);
+    setPanelHidden(false);
+    setPauseRequest((n) => n + 1);
+    jumpTo(index);
+  };
+
+  /** ▶ in the list or the panel: play the walkthrough from this step's start. */
+  const playFrom = (index) => {
+    setCurrent(index);
+    setJump({ index, nonce: Date.now(), play: true });
+  };
+
+  /** Drag & drop in the step list; the step on screen stays on screen. */
+  const moveStep = (from, to) => {
+    if (from === to) return;
+    const showing = draft.steps[frame]?.id;
+    const steps = [...draft.steps];
+    const [moved] = steps.splice(from, 1);
+    steps.splice(to, 0, moved);
+    setDraft((d) => ({ ...d, steps: renumberDefaultLabels(steps) }));
+    const at = steps.findIndex((s) => s.id === showing);
+    if (at >= 0 && at !== frame) jumpTo(at);
+  };
+
+  /**
+   * "Change moment": the new frame becomes this step's screenshot — and that of
+   * every step sharing its picture (they showed the same frame).
+   */
+  const changeFrame = async (index, frameBlob, seconds) => {
+    const target = draft.steps[index];
+    if (!target) return;
+    const mediaId = nextId('media');
+    try {
+      await putMedia(mediaId, frameBlob);
+    } catch (error) {
+      toast.error("Couldn't save the new frame. Please try again.");
+      throw error;
+    }
+    createdMedia.current.add(mediaId);
+    const oldImage = target.imageId;
+    setDraft((d) => ({
+      ...d,
+      steps: d.steps.map((s) =>
+        s.id === target.id ||
+        (oldImage && s.imageId === oldImage && typeof s.videoTime === 'number')
+          ? { ...s, imageId: mediaId, videoTime: seconds }
+          : s,
+      ),
+    }));
+    toast.success('New frame in place. Press ▶ Play to check it');
+  };
+
   const deleteStep = (index) => {
     setDraft((d) => ({
       ...d,
@@ -155,9 +234,12 @@ export function PreviewStudio({ course, onSave, onClose }) {
     jumpTo(Math.max(0, index - 1));
   };
 
-  /** Deletes Blobs that `keep` doesn't reference. */
+  /** Deletes Blobs that `keep` doesn't reference (nor its unsaved video draft). */
   const cleanupMedia = async (candidates, keep) => {
-    const used = new Set(collectMediaIds(keep));
+    const used = new Set([
+      ...collectMediaIds(keep),
+      ...(keep.videoDraftSteps || []).map((s) => s.imageId),
+    ]);
     for (const id of candidates) if (!used.has(id)) await deleteMedia(id);
   };
 
@@ -216,6 +298,29 @@ export function PreviewStudio({ course, onSave, onClose }) {
     [walkSteps, draft.pace],
   );
   const timeLabel = timings?.spans[frame] ? formatTime(timings.spans[frame].start) : undefined;
+
+  // The recording this step's picture came from ("Create by video"), if it is still there.
+  const videos = getCourseVideos(draft);
+  const stepVideoIndex =
+    step && typeof step.videoTime === 'number'
+      ? videos.findIndex((v) => v.id === (step.videoId ?? videos[0]?.id))
+      : -1;
+  const stepVideo =
+    stepVideoIndex >= 0
+      ? {
+          id: videos[stepVideoIndex].id,
+          time: step.videoTime,
+          duration: videos[stepVideoIndex].duration,
+          number: videos.length > 1 ? stepVideoIndex + 1 : undefined,
+        }
+      : null;
+  const sharedWith = step?.imageId
+    ? draft.steps.filter((s) => s.id !== step.id && s.imageId === step.imageId).length
+    : 0;
+  const thumbs = useMemo(
+    () => Object.fromEntries((walkSteps || []).map((w) => [w.id, w.imageData])),
+    [walkSteps],
+  );
 
   return (
     <div className="fixed inset-0 z-50 bg-paper dark:bg-paper-dark flex flex-col">
@@ -290,6 +395,21 @@ export function PreviewStudio({ course, onSave, onClose }) {
       </div>
 
       <div className="flex-1 min-h-0 flex">
+        {/* ── Steps: click to edit, ▶ to play from, drag to reorder ── */}
+        {editMode && (
+          <aside className="hidden lg:block w-[280px] flex-shrink-0 border-r border-line dark:border-line-dark bg-panel dark:bg-panel-dark">
+            <StudioStepList
+              steps={draft.steps}
+              thumbs={thumbs}
+              activeIndex={frame}
+              canDelete={draft.steps.length > 1}
+              onSelect={selectStep}
+              onPlay={playFrom}
+              onMove={moveStep}
+              onDelete={deleteStep}
+            />
+          </aside>
+        )}
         {/* ── Player ── */}
         <div className="flex-1 min-w-0 p-3 sm:p-5">
           <div
@@ -310,6 +430,7 @@ export function PreviewStudio({ course, onSave, onClose }) {
                 requestedIndex={jump}
                 pauseRequest={pauseRequest}
                 onInsertStep={editMode ? insertStepAt : undefined}
+                hideStepList={editMode}
               />
             ) : (
               <div className="h-full flex items-center justify-center">
@@ -345,6 +466,10 @@ export function PreviewStudio({ course, onSave, onClose }) {
                 onAddAfter={() => insertStepAt(frame + 1)}
                 onDelete={() => deleteStep(frame)}
                 onClose={() => setPanelHidden(true)}
+                onPlay={() => playFrom(frame)}
+                video={stepVideo}
+                sharedWith={sharedWith}
+                onFrameChange={(frameBlob, seconds) => changeFrame(frame, frameBlob, seconds)}
               />
             ) : (
               <div className="h-full flex flex-col items-center justify-center text-center px-8 gap-3">

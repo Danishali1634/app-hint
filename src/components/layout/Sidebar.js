@@ -252,7 +252,7 @@ export function Sidebar({ open, onClose }) {
 
           {/* Footer */}
           <div className="flex items-center justify-between gap-2 px-4 h-14 border-t border-line dark:border-line-dark flex-shrink-0">
-            <span />
+            <span className="text-xs text-ink-faint dark:text-ink-faint-dark truncate">Created by Danish Akhtar</span>
             <ThemeToggle />
           </div>
         </div>

@@ -7,8 +7,12 @@
  *   1. What's said   the text the AI voice reads. (Voice recording / upload is
  *                    switched off for now — see the commented-out code below.)
  *   2. Highlighted area  the screenshot with the selected box; "Change area"
- *                    redraws it. The screenshot itself can be replaced.
+ *                    redraws it; Click / Look / Type below it. The screenshot
+ *                    itself can be replaced — for a step made from a video,
+ *                    "Change moment" picks an earlier or later frame of that
+ *                    video (VideoFramePicker).
  *   3. Add step before / after, Delete step (small links at the bottom).
+ * "▶ Play" in the header plays the walkthrough from this step, to check it.
  *
  * Everything edits a DRAFT — nothing is saved until the studio's "Save".
  * Media created here (screenshots, recordings) is written to IndexedDB right
@@ -16,7 +20,7 @@
  */
 
 import { useState } from 'react';
-import { X, Upload, Plus, Trash2 } from 'lucide-react';
+import { X, Upload, Plus, Trash2, Play, Film } from 'lucide-react';
 import { putMedia } from '@/services/storage/db';
 import { nextId } from '@/utils';
 import { getStepAction } from '@/utils/course';
@@ -26,6 +30,8 @@ import { StepScreenshotUpload } from '@/components/course/StepScreenshotUpload';
 // Voice recording / upload is switched off for now.
 // import { AudioRecorderPanel } from '@/components/course/AudioRecorderPanel';
 import { DescriptionField } from '@/components/course/DescriptionField';
+import { VideoFramePicker } from '@/components/course/VideoFramePicker';
+import { formatDuration } from '@/utils';
 import { toast } from 'react-toastify';
 import { Tooltip } from '@/components/ui/Tooltip';
 
@@ -53,6 +59,11 @@ const SECTION_TITLE =
  *   onAddAfter: () => void,
  *   onDelete: () => void,
  *   onClose: () => void,
+ *   onPlay?: () => void,              // play the walkthrough from this step
+ *   video?: { id: string, time: number, duration?: number | null, number?: number } | null,
+ *                                     // the recording this step's picture was taken from
+ *   sharedWith?: number,              // other steps on the same picture (they change with it)
+ *   onFrameChange?: (frame: Blob, seconds: number) => Promise<void>,
  * }} props
  */
 export function StepEditPanel({
@@ -72,8 +83,13 @@ export function StepEditPanel({
   onAddAfter,
   onDelete,
   onClose,
+  onPlay,
+  video = null,
+  sharedWith = 0,
+  onFrameChange,
 }) {
   const [drawMode, setDrawMode] = useState(false);
+  const [pickingFrame, setPickingFrame] = useState(false);
 
   const handleImageFile = async (file) => {
     if (!file.type.startsWith('image/')) {
@@ -146,6 +162,16 @@ export function StepEditPanel({
             {timeLabel ? ` · ${timeLabel}` : ''}
           </p>
         </div>
+        {onPlay && (
+          <Tooltip label="Play the walkthrough from this step">
+            <button
+              onClick={onPlay}
+              className="flex items-center gap-1 h-8 px-2.5 rounded-lg bg-accent/10 text-accent text-xs font-semibold hover:bg-accent/15"
+            >
+              <Play className="w-3.5 h-3.5" /> Play
+            </button>
+          </Tooltip>
+        )}
         <Tooltip label="Close">
           <button
             onClick={onClose}
@@ -192,6 +218,45 @@ export function StepEditPanel({
             />
           ) : (
             <div className="space-y-3">
+              {video && onFrameChange && !pickingFrame && (
+                <div className="flex items-center gap-2 text-xs text-ink-soft dark:text-ink-soft-dark">
+                  <Film className="w-3.5 h-3.5 text-ink-faint dark:text-ink-faint-dark" />
+                  <span className="flex-1 tabular-nums">
+                    {video.number ? `Video ${video.number} · ` : 'From the video · '}
+                    {formatDuration(video.time)}
+                  </span>
+                  <Tooltip label="Pick an earlier or later frame of the video">
+                    <button
+                      onClick={() => setPickingFrame(true)}
+                      className="font-semibold text-accent hover:underline"
+                    >
+                      Change moment
+                    </button>
+                  </Tooltip>
+                </div>
+              )}
+              {video && onFrameChange && pickingFrame && (
+                <>
+                  <VideoFramePicker
+                    key={`${video.id}-${step.id}`}
+                    videoId={video.id}
+                    time={video.time}
+                    knownDuration={video.duration}
+                    onUse={async (frame, seconds) => {
+                      await onFrameChange(frame, seconds);
+                      setPickingFrame(false);
+                    }}
+                    onCancel={() => setPickingFrame(false)}
+                  />
+                  {sharedWith > 0 && (
+                    <p className="text-[11px] text-ink-faint dark:text-ink-faint-dark">
+                      {sharedWith === 1
+                        ? 'The other step on this picture gets the new frame too.'
+                        : `The ${sharedWith} other steps on this picture get the new frame too.`}
+                    </p>
+                  )}
+                </>
+              )}
               <FeatureSelector
                 imageUrl={imageUrl}
                 region={step.region}

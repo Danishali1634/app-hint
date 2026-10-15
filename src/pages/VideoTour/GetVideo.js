@@ -11,28 +11,42 @@
  * it and the builder (phase B) opens by itself.
  *
  * Cancelling the share picker is not an error: we just stay here.
+ *
+ * MORE VIDEOS: several files can be chosen (or dropped on the card) at once,
+ * and the same card opens as a dialog in the builder ("Upload more videos",
+ * variant 'dialog'), so a course can take features from many recordings.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, MonitorPlay, Upload, Square, Loader2, PlayCircle } from 'lucide-react';
+import { ArrowLeft, MonitorPlay, Upload, Square, Loader2, PlayCircle, X } from 'lucide-react';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { toast } from 'react-toastify';
 import { TutorialDialog } from '@/components/tutorial/TutorialDialog';
 import { formatDuration } from '@/utils';
 import { isScreenRecordingSupported, startScreenRecording } from '@/services/video/screenRecorder';
 
+/** @typedef {{ blob: Blob, durationSec: number | null, name: string }} NewVideo */
+
+/** The video files among `files` (a FileList or array), in the order given. */
+const videoFiles = (files) => [...(files || [])].filter((f) => f.type.startsWith('video/'));
+
 /**
  * @param {{
  *   title: string,
- *   onVideo: (video: { blob: Blob, durationSec: number | null }) => Promise<void>,
+ *   onVideos: (videos: NewVideo[]) => Promise<void>,
+ *   onUseScreenshots?: () => void,
+ *   variant?: 'page' | 'dialog',   // dialog: "Upload more videos" in the builder
+ *   onClose?: () => void,          // dialog only
  * }} props
  */
-export function GetVideo({ title, onVideo, onUseScreenshots }) {
+export function GetVideo({ title, onVideos, onUseScreenshots, variant = 'page', onClose }) {
   const navigate = useNavigate();
+  const dialog = variant === 'dialog';
   const [recording, setRecording] = useState(null); // { startedAt, floating } while recording
   const [elapsed, setElapsed] = useState(0);
   const [busy, setBusy] = useState(false); // saving the video
+  const [dragOver, setDragOver] = useState(false); // a file is dragged over the card
   const [showTutorial, setShowTutorial] = useState(false); // "View tutorial: creating with video"
   const recRef = useRef(null);
   const mountedRef = useRef(true);
@@ -61,16 +75,38 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
     };
   }, [recording]);
 
-  const saveVideo = async (blob, durationSec) => {
+  const saveVideos = async (videos) => {
     setBusy(true);
     try {
-      await onVideo({ blob, durationSec });
+      await onVideos(videos);
     } catch {
       toast.error("Couldn't save the video. Please try again.");
     } finally {
       if (mountedRef.current) setBusy(false);
     }
   };
+
+  /** Chosen or dropped files: every video among them is added, in order. */
+  const addFiles = (files) => {
+    const list = [...(files || [])];
+    const videos = videoFiles(list);
+    if (!videos.length) {
+      if (list.length) toast.error('Please choose a video file');
+      return;
+    }
+    if (videos.length < list.length) toast.info('Only the video files were added');
+    saveVideos(videos.map((file) => ({ blob: file, durationSec: null, name: file.name })));
+  };
+
+  // Esc closes the dialog (not while recording or saving).
+  useEffect(() => {
+    if (!dialog) return;
+    const handleKey = (e) => {
+      if (e.key === 'Escape' && !recording && !busy) onClose?.();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [dialog, recording, busy, onClose]);
 
   const startRecording = async () => {
     try {
@@ -83,7 +119,7 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
             toast.error('Nothing was recorded. Please try again.');
             return;
           }
-          saveVideo(blob, durationMs / 1000);
+          saveVideos([{ blob, durationSec: durationMs / 1000, name: '' }]);
         },
         onFloatingClose: () =>
           mountedRef.current && setRecording((r) => r && { ...r, floating: false }),
@@ -102,15 +138,8 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'video/*';
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      if (!file.type.startsWith('video/')) {
-        toast.error('Please choose a video file');
-        return;
-      }
-      saveVideo(file, null);
-    };
+    input.multiple = true;
+    input.onchange = () => addFiles(input.files);
     input.click();
   };
 
@@ -149,7 +178,7 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
   } else if (busy) {
     body = (
       <p className="flex items-center justify-center gap-2 py-10 text-sm font-semibold text-ink-soft dark:text-ink-soft-dark">
-        <Loader2 className="w-5 h-5 animate-spin text-accent" /> Opening your video…
+        <Loader2 className="w-5 h-5 animate-spin text-accent" /> Adding your video…
       </p>
     );
   } else {
@@ -159,9 +188,18 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
           <MonitorPlay className="w-8 h-8 text-accent" />
         </span>
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-ink dark:text-ink-soft-dark">
-            Record your screen
+          <h1
+            id="get-video-title"
+            className="text-2xl font-bold tracking-tight text-ink dark:text-ink-soft-dark"
+          >
+            {dialog ? 'Add another video' : 'Record your screen'}
           </h1>
+          {dialog && (
+            <p className="text-sm text-ink-soft dark:text-ink-soft-dark mt-2 max-w-sm">
+              Record again or upload more videos. Your features stay, and you can add features from
+              any video.
+            </p>
+          )}
           {!supported && (
             <p className="text-sm text-ink-soft dark:text-ink-soft-dark mt-2 max-w-sm">
               Recording works in Chrome or Edge on a computer. You can upload a video instead.
@@ -173,7 +211,7 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
             {[
               ['Pick what to record', 'a tab, a window or your screen'],
               ['Do the task', 'switch tabs freely'],
-              ['Press Stop', 'your video opens here'],
+              ['Press Stop', dialog ? 'it is added to your videos' : 'your video opens here'],
             ].map(([what, detail], n) => (
               <li
                 key={what}
@@ -201,15 +239,17 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
             </button>
           </Tooltip>
         )}
-        <Tooltip label="A short video that shows every click">
-          <button
-            onClick={() => setShowTutorial(true)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent/10 text-accent dark:text-accent-ink-dark ring-1 ring-accent/30 text-sm font-semibold hover:bg-accent/15 transition-colors"
-          >
-            <PlayCircle className="w-4 h-4" /> View tutorial: creating with video
-          </button>
-        </Tooltip>
-        <Tooltip label="Use a video file from your computer">
+        {!dialog && (
+          <Tooltip label="A short video that shows every click">
+            <button
+              onClick={() => setShowTutorial(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent/10 text-accent dark:text-accent-ink-dark ring-1 ring-accent/30 text-sm font-semibold hover:bg-accent/15 transition-colors"
+            >
+              <PlayCircle className="w-4 h-4" /> View tutorial: creating with video
+            </button>
+          </Tooltip>
+        )}
+        <Tooltip label="Use video files from your computer (you can pick several)">
           <button
             onClick={pickFile}
             className={
@@ -218,10 +258,13 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
                 : 'flex items-center gap-2 h-12 px-6 rounded-xl bg-accent text-white font-semibold hover:bg-accent-dark transition-colors'
             }
           >
-            <Upload className="w-4 h-4" /> {supported ? 'or upload a video' : 'Upload a video'}
+            <Upload className="w-4 h-4" /> {supported ? 'or upload videos' : 'Upload videos'}
           </button>
         </Tooltip>
-        {onUseScreenshots && (
+        <p className="-mt-3 text-xs text-ink-faint dark:text-ink-faint-dark">
+          or drop video files here
+        </p>
+        {!dialog && onUseScreenshots && (
           <button
             onClick={onUseScreenshots}
             className="text-sm font-medium text-ink-faint dark:text-ink-faint-dark hover:text-ink dark:hover:text-ink-soft-dark"
@@ -229,6 +272,70 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
             Use screenshots instead
           </button>
         )}
+      </div>
+    );
+  }
+
+  // Dropping video files on the card adds them (not while recording or saving).
+  const canDrop = !recording && !busy;
+  const dropProps = {
+    onDragOver: (e) => {
+      if (!canDrop || !e.dataTransfer?.types?.includes('Files')) return;
+      e.preventDefault();
+      setDragOver(true);
+    },
+    onDragLeave: (e) => {
+      if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false);
+    },
+    onDrop: (e) => {
+      if (!canDrop) return;
+      e.preventDefault();
+      setDragOver(false);
+      addFiles(e.dataTransfer.files);
+    },
+  };
+  const card = (
+    <div
+      {...dropProps}
+      className={`relative rounded-3xl border bg-panel dark:bg-panel-dark shadow-sm transition-colors ${
+        dragOver ? 'border-accent ring-4 ring-accent/20' : 'border-line dark:border-line-dark'
+      } ${recording ? 'max-w-md mx-auto px-6 py-6' : 'px-6 py-10 sm:px-10'}`}
+    >
+      {dialog && !recording && !busy && (
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 w-9 h-9 rounded-lg flex items-center justify-center text-ink-faint hover:text-ink dark:text-ink-faint-dark dark:hover:text-ink-soft-dark hover:bg-paper-2 dark:hover:bg-paper-2-dark"
+          aria-label="Close"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      )}
+      {body}
+      {dragOver && (
+        <div className="absolute inset-0 rounded-3xl bg-accent/10 flex items-center justify-center pointer-events-none">
+          <p className="px-4 py-2 rounded-xl bg-accent text-white text-sm font-bold shadow-lg">
+            Release to add the video
+          </p>
+        </div>
+      )}
+    </div>
+  );
+
+  if (dialog) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div
+          className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+          onClick={() => !recording && !busy && onClose?.()}
+        />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="get-video-title"
+          className="relative w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto rounded-3xl shadow-2xl"
+        >
+          {card}
+        </div>
       </div>
     );
   }
@@ -251,13 +358,7 @@ export function GetVideo({ title, onVideo, onUseScreenshots }) {
             {title}
           </p>
         </div>
-        <div
-          className={`rounded-3xl border border-line dark:border-line-dark bg-panel dark:bg-panel-dark shadow-sm ${
-            recording ? 'max-w-md mx-auto px-6 py-6' : 'px-6 py-10 sm:px-10'
-          }`}
-        >
-          {body}
-        </div>
+        {card}
       </div>
       {showTutorial && (
         <TutorialDialog initialId="start-recording" onClose={() => setShowTutorial(false)} />

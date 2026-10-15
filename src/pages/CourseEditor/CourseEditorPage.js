@@ -85,6 +85,7 @@ import {
   HelpCircle,
   ImagePlus,
   Video,
+  Upload,
   Compass,
   Mic2,
   SpellCheck,
@@ -123,6 +124,8 @@ import {
   normalizeStepGroups,
   withTargets,
   getCourseScreens,
+  getCourseVideos,
+  tidyStepGroups,
 } from '@/utils/course';
 import { CollapsedRail, StepRail } from '@/components/course/StepRail';
 import { PanelResizer, readStoredNumber, storeValue } from '@/components/ui/PanelResizer';
@@ -1058,6 +1061,7 @@ export function CourseEditorPage() {
   if (!course) return null;
 
   const readyCount = course.steps.filter(isStepReady).length;
+  const hasVideos = getCourseVideos(course).length > 0;
   // The five milestones of the coach, in order; the first not done is "now".
   const coachItems = [
     {
@@ -1329,10 +1333,13 @@ export function CourseEditorPage() {
               },
               {
                 icon: Video,
-                label: course.sourceVideoId
-                  ? 'Add steps from your video'
-                  : 'Add steps from a video',
+                label: hasVideos ? 'Add steps from your videos' : 'Add steps from a video',
                 onClick: () => navigate(`/video/${course.id}`),
+              },
+              hasVideos && {
+                icon: Upload,
+                label: 'Upload more videos',
+                onClick: () => navigate(`/video/${course.id}?add=1`),
               },
               {
                 icon: Tag,
@@ -1469,7 +1476,7 @@ export function CourseEditorPage() {
                   reuseSourceIndex >= 0 ? stepNumbers[reuseSourceIndex].main : null
                 }
                 onReuse={reusePreviousImage}
-                onRecord={() => navigate(`/video/${course.id}`)}
+                onRecord={() => navigate(`/video/${course.id}${hasVideos ? '?add=1' : ''}`)}
                 onShowTutorial={() => setTutorialId('start')}
               />
               {/* First step: who will read the steps aloud (one line, opens to choose). */}
@@ -1529,11 +1536,7 @@ export function CourseEditorPage() {
         <PreviewStudio
           course={course}
           onSave={(saved) => {
-            const groupedSteps = normalizeStepGroups(saved, () => nextId('group'));
-            const next =
-              groupedSteps === saved.steps
-                ? saved
-                : { ...saved, steps: renumberDefaultLabels(groupedSteps) };
+            const next = tidyStepGroups(saved, () => nextId('group'));
             savedAtRef.current = next.updatedAt;
             setCourse(next);
             saveCourse(next);
