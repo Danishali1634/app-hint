@@ -663,7 +663,7 @@ export function CaptionContent({ step, stepNumber, narration, compact = false })
   // smaller font, never cut off. Web view: the whole description, as always.
   const inParts = !!narration.captionParts;
   if (compact && !inParts) {
-    // Small embeds: one tight row, text clamped to two lines.
+    // Small embeds: one tight row, the whole text.
     return (
       <div className="flex items-start gap-2 rounded-xl bg-panel/95 dark:bg-panel-dark/95 backdrop-blur-md border border-line dark:border-line-dark shadow-xl px-2.5 py-2">
         <span className="w-5 h-5 rounded-full bg-accent text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">
@@ -671,7 +671,7 @@ export function CaptionContent({ step, stepNumber, narration, compact = false })
             {stepNumber}
           </span>
         </span>
-        <p className="text-xs leading-snug text-ink dark:text-ink-soft-dark line-clamp-2">
+        <p className="text-xs leading-snug text-ink dark:text-ink-soft-dark break-words">
           {step.label && <strong className="font-semibold">{step.label}. </strong>}
           {step.text}
         </p>

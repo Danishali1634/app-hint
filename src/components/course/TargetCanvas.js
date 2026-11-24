@@ -703,7 +703,7 @@ function CaptionBubble({ box, number, text, onClick }) {
         {number}
       </span>
       <span
-        className={`text-xs leading-snug line-clamp-3 ${
+        className={`text-xs leading-snug break-words whitespace-pre-line ${
           text?.trim()
             ? 'text-ink dark:text-ink-soft-dark'
             : 'italic text-ink-faint dark:text-ink-faint-dark'

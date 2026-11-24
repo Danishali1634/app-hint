@@ -9,7 +9,7 @@
  *
  * TWO LAYOUTS (frame.mobile, from exportVideo's format):
  *   Web     1280×720, title and margins around the picture; the caption shows
- *           the description in up to 3 lines (then …) — as always.
+ *           the whole description (never cut off).
  *   Mobile  the phone's full screen (portrait or landscape): thin margins so
  *           the picture gets the whole area; the caption text is never cut
  *           off — the font shrinks a little to fit, and a long description is
@@ -34,7 +34,7 @@ import { captionAwareView, placeCaption } from '@/utils/captionPlacement';
 import { getFocusRegion, getStepTargets, getStepTitles } from '@/utils/course';
 import { partAt, splitCaptionParts } from '@/utils/captionParts';
 import { formatTime } from '@/utils';
-import { OUTRO_TEXT, WALKTHROUGH_TIMING } from '@/constants';
+import { CREATOR, OUTRO_TEXT, WALKTHROUGH_TIMING } from '@/constants';
 import { isClickStep, transitionFor } from './timeline';
 
 /** @typedef {import('./timeline').TimelineSegment} TimelineSegment */
@@ -239,7 +239,7 @@ function captionPartFor(step, phase, elapsed) {
 
 /**
  * Caption layout for a given width: wrapped lines and the card's height.
- * Web: label up to 2 lines, text up to 3 (then …), as always.
+ * Web: label up to 2 lines, then the whole text (never cut off).
  * Mobile: every part wrapped in the largest font that fits each part in
  * CAPTION_MAX_LINES (smallest font: as many lines as needed — nothing is ever
  * cut). The card is as tall as its LONGEST part, so it keeps its size and
@@ -254,7 +254,7 @@ function layoutCaption(ctx, { width, step, mobile }) {
     ctx.font = `600 17px ${FONT}`;
     const labelLines = label ? wrapText(ctx, label, textWidth, 2) : [];
     ctx.font = `400 15px ${FONT}`;
-    const textLines = text ? wrapText(ctx, text, textWidth, 3) : [];
+    const textLines = text ? wrapText(ctx, text, textWidth, Infinity, true) : [];
     ctx.restore();
     const height =
       CAPTION_PAD * 2 + Math.max(CAPTION_BADGE, labelLines.length * 22 + textLines.length * 21);
@@ -646,7 +646,29 @@ function drawOutro(ctx, width, height, t, title, stepCount, geo) {
   ctx.globalAlpha = fade * tagIn;
   ctx.font = `500 15px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.55)';
-  ctx.fillText(OUTRO_TEXT.tagline(stepCount), cx, cy + 170 + learned.length * 28 + 18);
+  const tagY = cy + 170 + learned.length * 28 + 18;
+  ctx.fillText(OUTRO_TEXT.tagline(stepCount), cx, tagY);
+
+  // "Created by Danish Akhtar": initials badge + name (as on the player's end card).
+  const byIn = easeOut(within(t - 1500, 700));
+  ctx.globalAlpha = fade * byIn;
+  ctx.font = `600 16px ${FONT}`;
+  const byText = OUTRO_TEXT.createdBy;
+  const badge = 15;
+  const total = badge * 2 + 10 + ctx.measureText(byText).width;
+  const bx = cx - total / 2 + badge;
+  const by = tagY + 44 + 8 * (1 - byIn);
+  ctx.fillStyle = COLORS.accent;
+  ctx.beginPath();
+  ctx.arc(bx, by, badge, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = `700 12px ${FONT}`;
+  ctx.fillText(CREATOR.initials, bx, by + 1);
+  ctx.font = `600 16px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.textAlign = 'left';
+  ctx.fillText(byText, bx + badge + 10, by + 1);
   ctx.restore();
 }
 

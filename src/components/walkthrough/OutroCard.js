@@ -3,12 +3,14 @@
  * downloaded video (services/video/renderFrame drawOutro): the screen dims,
  * sparkles rise around a glowing circle, a check mark draws itself, then
  * "You're all set!", what was learned and "n steps · Happy working! 🎉"
- * (wording shared via OUTRO_TEXT). Plus a Watch again button.
+ * (wording shared via OUTRO_TEXT), "Created by Danish Akhtar" with his photo
+ * (CreatorBadge). Plus a Watch again button.
  * Animations: .hs-outro* in index.css (off with prefers-reduced-motion).
  */
 
 import { RotateCcw } from 'lucide-react';
 import { OUTRO_TEXT } from '@/constants';
+import { CreatorBadge } from '@/components/ui/CreatorBadge';
 
 const SPARKS = 18;
 const SPARK_COLORS = ['#FFFFFF', '#1570EF', '#2DD4BF']; // white · accent · teal (as in the video)
@@ -97,6 +99,14 @@ export function OutroCard({ title, stepCount, onRestart, compact = false }) {
           {OUTRO_TEXT.tagline(stepCount)}
         </p>
       )}
+
+      <div className="hs-outro-rise" style={{ animationDelay: '1600ms' }}>
+        <CreatorBadge
+          tone="dark"
+          size={compact ? 20 : 30}
+          className={compact ? 'mt-2 [&_span]:text-xs' : 'mt-5'}
+        />
+      </div>
 
       <button
         onClick={onRestart}

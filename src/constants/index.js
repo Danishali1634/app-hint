@@ -151,8 +151,21 @@ export const WALKTHROUGH_TIMING = {
  * (components/walkthrough/OutroCard) and in the downloaded video
  * (services/video/renderFrame drawOutro). One wording for both.
  */
+/**
+ * Who made Hint Studio: shown wherever a walkthrough is shared — the shared
+ * page, the end card of the player and of the downloaded video, and the link
+ * preview (index.html). `photo` is a file in /public; until it exists the
+ * initials are shown instead (components/ui/CreatorBadge).
+ */
+export const CREATOR = {
+  name: 'Danish Akhtar',
+  initials: 'DA',
+  photo: '/danish-akhtar.jpg',
+};
+
 export const OUTRO_TEXT = {
   heading: "You're all set!",
   learned: (title) => `Now you know: ${title}`,
   tagline: (stepCount) => `${stepCount} step${stepCount === 1 ? '' : 's'} · Happy working! 🎉`,
+  createdBy: `Created by ${CREATOR.name}`,
 };

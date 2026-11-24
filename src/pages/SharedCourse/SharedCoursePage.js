@@ -18,6 +18,7 @@ import { AlertCircle, Mic } from 'lucide-react';
 import { decodeShareableCourse, shareableToWalkthroughSteps } from '@/services/sharing/share';
 import { WalkthroughPlayer } from '@/components/walkthrough/WalkthroughPlayer';
 import { CourseInfo } from '@/components/walkthrough/CourseInfo';
+import { CreatorBadge } from '@/components/ui/CreatorBadge';
 
 export function SharedCoursePage() {
   const { encoded } = useParams();
@@ -63,13 +64,18 @@ export function SharedCoursePage() {
           </span>
           Hint Studio
         </span>
-        <button
-          onClick={() => navigate('/')}
-          className="text-sm text-ink-soft dark:text-ink-faint-dark hover:text-accent transition-colors"
-        >
-          Create your own →
-        </button>
+        <div className="flex items-center gap-4">
+          <CreatorBadge className="hidden sm:inline-flex" />
+          <button
+            onClick={() => navigate('/')}
+            className="text-sm text-ink-soft dark:text-ink-faint-dark hover:text-accent transition-colors"
+          >
+            Create your own →
+          </button>
+        </div>
       </div>
+      {/* Phones: the credit gets its own line under the header. */}
+      <CreatorBadge className="sm:hidden -mt-2 mb-4" size={24} />
 
       <div className="h-[min(72vh,720px)] min-h-[420px]">
         <WalkthroughPlayer steps={steps} title={title} variant="inline" pace={shareable.c.pace} />
